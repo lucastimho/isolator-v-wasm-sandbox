@@ -118,13 +118,21 @@ func NewManager(cfg ManagerConfig) *Manager {
 //
 // Lifecycle:
 //  1. Apply a per-request execution timeout (context deadline).
+//     req.Timeout takes precedence when it is set and shorter than the
+//     server-wide m.execTimeout — this lets callers pass a tighter deadline
+//     (e.g. from the timeout_ms JSON field) without exceeding the global cap.
 //  2. Acquire a warm slot from the pool (bounded by acquireTimeout).
 //  3. Call the worker — it enforces its own CPU/memory quota.
 //  4. Return the slot to the pool unconditionally (defer).
 //  5. Forward the VFS snapshot to the write-behind channel.
 func (m *Manager) Execute(ctx context.Context, req *worker.ExecuteRequest) (*ExecutionResult, error) {
-	// 1 — Hard deadline for the whole round-trip.
-	execCtx, execCancel := context.WithTimeout(ctx, m.execTimeout)
+	// 1 — Hard deadline: use req.Timeout when it is > 0 and tighter than the
+	//     server-wide cap so individual requests can opt into shorter deadlines.
+	execTO := m.execTimeout
+	if req.Timeout > 0 && req.Timeout < execTO {
+		execTO = req.Timeout
+	}
+	execCtx, execCancel := context.WithTimeout(ctx, execTO)
 	defer execCancel()
 
 	// 2 — Acquire a slot (separate, shorter timeout so we fail fast on overload).

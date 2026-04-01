@@ -892,17 +892,24 @@ impl SandboxPool {
             .map_err(SandboxError::Trap)?;
 
         // ── CPU quota ─────────────────────────────────────────────────────────
-        // For async stores, `epoch_deadline_trap()` does not reliably preempt
-        // because the WASM fiber runs synchronously between tokio poll points.
-        // The correct async approach is:
-        //   1. `epoch_deadline_async_yield_and_update(1)` — when the epoch
-        //      fires, the async future returns Poll::Pending, yielding control
-        //      back to the tokio executor instead of trapping in-place.
-        //   2. `tokio::time::timeout` wrapping `call_async` — after
-        //      cpu_quota_ticks × epoch_tick_ms the timeout fires on the next
-        //      cooperative yield and the future is dropped.
+        // We use epoch_deadline_trap() rather than epoch_deadline_async_yield_and_update().
+        //
+        // On Windows, epoch_deadline_async_yield_and_update suspends the WASM
+        // fiber and returns Poll::Pending.  When tokio::time::timeout fires and
+        // drops the call_async future, Wasmtime must clean up the suspended fiber.
+        // That cleanup performs a fiber context switch on Windows, which violates
+        // the GS security-cookie (stack canary) check and raises
+        // STATUS_STACK_BUFFER_OVERRUN (0xc0000409) — visible as
+        // "panic in a function that cannot unwind".
+        //
+        // With epoch_deadline_trap() the epoch injects a Trap::Interrupt from
+        // within the running fiber.  The fiber exits cleanly (no suspended-fiber
+        // lifetime to drop), and call_async resolves with Err(Trap::Interrupt),
+        // which we map to CpuQuotaExceeded below.
+        // tokio::time::timeout is kept as an absolute backstop; in practice the
+        // epoch trap fires first.
         slot.store.set_epoch_deadline(self.config.cpu_quota_ticks);
-        slot.store.epoch_deadline_async_yield_and_update(1);
+        slot.store.epoch_deadline_trap();
 
         let quota_ms = self.config.cpu_quota_ticks * self.config.epoch_tick_ms;
 
@@ -941,6 +948,12 @@ impl SandboxPool {
                             // Clean guest exit via proc_exit() — the exit code
                             // was already stored in slot.store.data().
                             Ok(())
+                        } else if e
+                            .downcast_ref::<wasmtime::Trap>()
+                            .is_some_and(|t| *t == wasmtime::Trap::Interrupt)
+                        {
+                            // Epoch deadline fired — CPU quota exceeded.
+                            Err(SandboxError::CpuQuotaExceeded { limit_ms: quota_ms })
                         } else {
                             Err(SandboxError::Trap(e))
                         }

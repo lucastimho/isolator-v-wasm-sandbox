@@ -1,12 +1,10 @@
 // Package worker defines the interface between the orchestrator and any WASM
 // worker node, plus the types shared by all transport implementations.
 //
-// Current concrete implementations:
+// Concrete implementations:
 //   - HTTPWorkerClient  — bridges the existing Rust wasm-worker-manager REST API.
-//
-// Future:
-//   - GRPCWorkerClient  — generated from proto/sandbox/v1/sandbox.proto once
-//                          the Rust worker exposes a gRPC server.
+//   - GRPCWorkerClient  — calls sandbox.v1.SandboxService over HTTP/2 gRPC once
+//                          the Rust worker is upgraded to expose the gRPC server.
 //
 // Swapping transports requires only changing the factory in main.go; the pool
 // and all middleware are transport-agnostic.
@@ -28,6 +26,7 @@ type ExecuteRequest struct {
 // ExecuteResponse is the canonical result of a sandbox execution.
 type ExecuteResponse struct {
 	SandboxID   string
+	SessionID   string // carried through from ExecuteRequest for VFS persistence
 	Stdout      []byte
 	Stderr      []byte
 	ExitCode    int32

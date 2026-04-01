@@ -63,6 +63,8 @@ type WriteBehindSync struct {
 	db            *sql.DB
 	ch            chan *worker.ExecuteResponse
 	flushInterval time.Duration
+	stopCh   chan struct{} // closed by Close() to stop the flushLoop goroutine
+	stopOnce sync.Once   // ensures stopCh is closed exactly once (safe for double-Close)
 
 	mu      sync.Mutex
 	pending []*entry
@@ -91,6 +93,7 @@ func New(cfg Config) (*WriteBehindSync, error) {
 		db:            db,
 		ch:            cfg.Ch,
 		flushInterval: interval,
+		stopCh:        make(chan struct{}),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -140,6 +143,7 @@ func (s *WriteBehindSync) ingest() {
 		for path, data := range resp.VFSSnapshot {
 			s.pending = append(s.pending, &entry{
 				sandboxID: resp.SandboxID,
+				sessionID: resp.SessionID,
 				path:      path,
 				data:      data,
 				createdAt: now,
@@ -154,9 +158,14 @@ func (s *WriteBehindSync) ingest() {
 func (s *WriteBehindSync) flushLoop() {
 	t := time.NewTicker(s.flushInterval)
 	defer t.Stop()
-	for range t.C {
-		if err := s.Flush(context.Background()); err != nil {
-			s.log.Error("vfs periodic flush failed", zap.Error(err))
+	for {
+		select {
+		case <-t.C:
+			if err := s.Flush(context.Background()); err != nil {
+				s.log.Error("vfs periodic flush failed", zap.Error(err))
+			}
+		case <-s.stopCh:
+			return
 		}
 	}
 }
@@ -209,9 +218,12 @@ func (s *WriteBehindSync) Flush(ctx context.Context) error {
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
-// Close performs a final flush and closes the database connection.
-// Should be called during graceful shutdown.
+// Close stops the flush goroutine, performs a final flush, and closes the
+// database connection.  Safe to call more than once: the second call returns
+// an error from db.Close() but does not panic.
 func (s *WriteBehindSync) Close(ctx context.Context) error {
+	// Signal flushLoop to exit exactly once; a second Close must not panic.
+	s.stopOnce.Do(func() { close(s.stopCh) })
 	if err := s.Flush(ctx); err != nil {
 		s.log.Error("vfs final flush failed", zap.Error(err))
 	}

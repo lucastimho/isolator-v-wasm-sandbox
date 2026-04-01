@@ -56,7 +56,15 @@ func (p *WarmPool) Put(c worker.Client) {
 
 // Get acquires a client from the pool, blocking until ctx is cancelled or a
 // client is available.
+//
+// The ctx.Err() check before the select ensures a pre-cancelled context always
+// fails immediately.  Without it, when both a slot and ctx.Done() are ready at
+// the same time, Go's select picks one at random — making tests that pre-cancel
+// the context flaky.
 func (p *WarmPool) Get(ctx context.Context) (worker.Client, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, ErrPoolExhausted
+	}
 	select {
 	case c := <-p.slots:
 		return c, nil

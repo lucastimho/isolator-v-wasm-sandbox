@@ -40,8 +40,9 @@ func NewHTTPClient(addr string) *HTTPWorkerClient {
 
 // rustExecuteReq matches the Rust worker's POST /execute body.
 type rustExecuteReq struct {
-	WASMB64 string `json:"wasm_b64"`
-	Label   string `json:"label"`
+	WASMB64   string `json:"wasm_b64"`
+	Label     string `json:"label"`
+	TimeoutMs uint64 `json:"timeout_ms,omitempty"` // 0 → worker default
 }
 
 // rustExecuteResp matches the Rust worker's 200 response.
@@ -61,6 +62,9 @@ func (c *HTTPWorkerClient) Execute(ctx context.Context, req *ExecuteRequest) (*E
 	body := rustExecuteReq{
 		WASMB64: base64.StdEncoding.EncodeToString(req.WASMBytes),
 		Label:   req.Label,
+	}
+	if req.Timeout > 0 {
+		body.TimeoutMs = uint64(req.Timeout.Milliseconds())
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -90,6 +94,7 @@ func (c *HTTPWorkerClient) Execute(ctx context.Context, req *ExecuteRequest) (*E
 
 	return &ExecuteResponse{
 		SandboxID:   result.SandboxID,
+		SessionID:   req.SessionID, // carry through for VFS persistence
 		Stdout:      result.Stdout,
 		Stderr:      result.Stderr,
 		ExitCode:    result.ExitCode,

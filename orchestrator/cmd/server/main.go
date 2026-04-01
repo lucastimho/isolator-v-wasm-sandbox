@@ -51,16 +51,32 @@ func main() {
 	log.Info("isolator-v orchestrator starting",
 		zap.String("port", cfg.Port),
 		zap.Strings("workers", cfg.WorkerAddrs),
+		zap.String("worker_protocol", cfg.WorkerProtocol),
 		zap.Int("pool_capacity", cfg.PoolCapacity),
 		zap.Bool("auth_enabled", cfg.JWTSecret != ""),
 		zap.Bool("vfs_persistence", cfg.LibSQLURL != ""),
 	)
 
-	// ── Worker clients (HTTP → existing Rust workers) ──────────────────────
+	// ── Worker clients ─────────────────────────────────────────────────────
+	// WORKER_PROTOCOL=http  → HTTPWorkerClient (default; no worker binary changes needed)
+	// WORKER_PROTOCOL=grpc  → GRPCWorkerClient (requires upgraded Rust worker)
 	var clients []worker.Client
 	for _, addr := range cfg.WorkerAddrs {
-		clients = append(clients, worker.NewHTTPClient(strings.TrimSpace(addr)))
-		log.Info("registered worker", zap.String("addr", addr))
+		addr = strings.TrimSpace(addr)
+		switch cfg.WorkerProtocol {
+		case "grpc":
+			c, err := worker.NewGRPCClient(addr, log.Named("grpc"))
+			if err != nil {
+				log.Fatal("grpc worker dial failed", zap.String("addr", addr), zap.Error(err))
+			}
+			clients = append(clients, c)
+		default: // "http"
+			clients = append(clients, worker.NewHTTPClient(addr))
+		}
+		log.Info("registered worker",
+			zap.String("addr", addr),
+			zap.String("protocol", cfg.WorkerProtocol),
+		)
 	}
 	if len(clients) == 0 {
 		log.Fatal("no worker addresses configured (WORKER_ADDRS)")

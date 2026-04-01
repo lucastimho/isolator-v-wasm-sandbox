@@ -13,9 +13,15 @@ type Config struct {
 	// HTTP server
 	Port string
 
-	// WASM Worker nodes — comma-separated HTTP base URLs.
-	// e.g. "http://worker1:3000,http://worker2:3000"
+	// WASM Worker nodes — comma-separated addresses.
+	//   HTTP workers:  "http://worker1:3000,http://worker2:3000"
+	//   gRPC workers:  "worker1:50051,worker2:50051"
 	WorkerAddrs []string
+
+	// WorkerProtocol selects the transport used to talk to worker nodes.
+	//   "http"  — existing Rust REST API (default, no changes to the worker binary)
+	//   "grpc"  — sandbox.v1.SandboxService over HTTP/2 (requires upgraded worker)
+	WorkerProtocol string
 
 	// Warm Pool
 	PoolCapacity int
@@ -47,6 +53,7 @@ func Load() *Config {
 	return &Config{
 		Port:            env("PORT", "8080"),
 		WorkerAddrs:     splitTrim(env("WORKER_ADDRS", "http://localhost:3000"), ","),
+		WorkerProtocol:  env("WORKER_PROTOCOL", "http"),
 		PoolCapacity:    envInt("POOL_CAPACITY", 50),
 		ExecTimeout:     time.Duration(envInt("EXEC_TIMEOUT_MS", 30_000)) * time.Millisecond,
 		RedisURL:        env("REDIS_URL", "redis://localhost:6379"),
