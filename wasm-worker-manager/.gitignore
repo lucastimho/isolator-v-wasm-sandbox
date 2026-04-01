@@ -1,0 +1,9 @@
+# ── Rust build artifacts ──────────────────────────────────────────────────────
+/target/
+**/*.rs.bk
+
+# ── Cargo lock (keep for binaries, optional for libraries) ───────────────────
+# Cargo.lock is intentionally committed for this binary crate.
+
+# ── Test outputs ──────────────────────────────────────────────────────────────
+/wasm_stress_*.txt

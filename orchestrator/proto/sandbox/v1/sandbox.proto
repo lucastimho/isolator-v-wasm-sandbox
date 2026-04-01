@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package sandbox.v1;
+
+option go_package = "github.com/lucasho/isolator-v/orchestrator/gen/sandbox/v1;sandboxv1";
+
+// SandboxService is the gRPC contract between the Orchestrator and WASM Worker
+// nodes.  The Go orchestrator acts as client; each Rust worker implements the
+// server side.  Until the Rust worker exposes gRPC, the HTTPWorkerClient
+// adapter fulfils the same interface over the existing REST API.
+service SandboxService {
+  // Execute runs WASM bytes in a pre-warmed sandbox and returns the result.
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+
+  // StreamExecute runs WASM bytes and streams stdout/stderr chunks in
+  // real-time — used by the WebSocket "Agent Console" relay.
+  rpc StreamExecute(ExecuteRequest) returns (stream OutputChunk);
+
+  // Health returns the worker's liveness and warm-slot availability.
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// ── Execute ───────────────────────────────────────────────────────────────────
+
+message ExecuteRequest {
+  bytes  wasm_bytes  = 1; // Raw WASM binary (not Base64).
+  string label       = 2; // Human-readable tag for logs and traces.
+  string session_id  = 3; // Optional: correlates execution to a user session.
+  uint64 timeout_ms  = 4; // Hard execution deadline; 0 → worker default.
+}
+
+message ExecuteResponse {
+  string sandbox_id             = 1;
+  bytes  stdout                 = 2;
+  bytes  stderr                 = 3;
+  int32  exit_code              = 4;
+  uint64 elapsed_ms             = 5;
+  map<string, bytes> vfs_snapshot = 6; // In-memory VFS state at completion.
+  string error                  = 7;   // Non-empty on worker-level failure.
+}
+
+// ── Stream ────────────────────────────────────────────────────────────────────
+
+message OutputChunk {
+  enum Stream {
+    STDOUT = 0;
+    STDERR = 1;
+  }
+  Stream stream    = 1;
+  bytes  data      = 2;
+  bool   done      = 3; // True on the final chunk.
+  int32  exit_code = 4; // Populated only when done=true.
+}
+
+// ── Health ────────────────────────────────────────────────────────────────────
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool   healthy    = 1;
+  uint32 warm_slots = 2;
+  string version    = 3;
+}

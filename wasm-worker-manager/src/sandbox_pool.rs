@@ -282,15 +282,24 @@ impl SandboxPool {
         wt_config.epoch_interruption(true);
 
         // Pooling allocator: pre-allocates virtual address space for all slots
-        // upfront, avoiding mmap(2) syscalls on the hot path → sub-20ms starts.
-        let mut pool_cfg = PoolingAllocationConfig::default();
-        pool_cfg.total_memories(POOL_TOTAL_SLOTS);
-        pool_cfg.total_tables(POOL_TOTAL_SLOTS);
-        pool_cfg.total_core_instances(POOL_TOTAL_SLOTS);
-        // Each memory is bounded to MEMORY_PAGE_LIMIT 64KB pages = 50MB.
-        pool_cfg.max_memory_size(cfg.memory_limit_bytes);
+        // upfront, avoiding mmap(2) syscalls on the hot path → sub-20ms cold starts.
+        //
+        // Disabled in test builds: the pooling allocator eagerly reserves
+        // POOL_TOTAL_SLOTS × memory_limit_bytes (512 × 50 MB = 25.6 GB) of
+        // virtual address space at engine-construction time.  Many test / CI
+        // environments impose a per-process virtual-memory limit that makes this
+        // reservation fail inside Module::new.  On-demand allocation is used
+        // instead — it is slower but functionally identical for correctness tests.
+        if !cfg!(test) {
+            let mut pool_cfg = PoolingAllocationConfig::default();
+            pool_cfg.total_memories(POOL_TOTAL_SLOTS);
+            pool_cfg.total_tables(POOL_TOTAL_SLOTS);
+            pool_cfg.total_core_instances(POOL_TOTAL_SLOTS);
+            // Each memory is bounded to MEMORY_PAGE_LIMIT 64KB pages = 50MB.
+            pool_cfg.max_memory_size(cfg.memory_limit_bytes);
 
-        wt_config.allocation_strategy(InstanceAllocationStrategy::Pooling(pool_cfg));
+            wt_config.allocation_strategy(InstanceAllocationStrategy::Pooling(pool_cfg));
+        }
 
         // Wasm proposals needed for real language runtimes.
         wt_config.wasm_bulk_memory(true);
