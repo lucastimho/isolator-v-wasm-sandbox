@@ -1,0 +1,31 @@
+# ── Rust build artifacts ──────────────────────────────────────────────────────
+/target/
+**/*.rs.bk
+
+# ── Cargo lock (keep for binaries, optional for libraries)
+# Cargo.lock is intentionally committed for this binary crate.
+
+# ── IDE / editor ──────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ── Logs & temp files ─────────────────────────────────────────────────────────
+*.log
+server.log
+/tmp/
+
+# ── Test outputs ──────────────────────────────────────────────────────────────
+/wasm_stress_*.txt

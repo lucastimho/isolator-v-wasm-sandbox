@@ -1,0 +1,96 @@
+[package]
+name        = "wasm-worker-manager"
+version     = "0.1.0"
+edition     = "2021"
+description = "Secure, ephemeral, high-concurrency WASM execution environment for AI agents"
+authors     = ["Senior Staff Systems Engineer"]
+
+# ─── Targets ───────────────────────────────────────────────────────────────────
+
+[[bin]]
+name = "wasm-worker-manager"
+path = "src/main.rs"
+
+[lib]
+name = "wasm_worker_manager"
+path = "src/lib.rs"
+
+# ─── Dependencies ──────────────────────────────────────────────────────────────
+[dependencies]
+
+# ── WASM Runtime ───────────────────────────────────────────────────────────────
+# Wasmtime 25.x:
+#   • cranelift          : optimising JIT compiler (Cranelift backend)
+#   • pooling-allocator  : pre-allocated virtual address space for all slots
+#                          → eliminates mmap(2) cost on the hot path → sub-20ms cold starts
+#   • async              : async host functions (required for epoch-based cooperative yields)
+wasmtime      = { version = "25.0", default-features = false, features = [
+    "cranelift",
+    "pooling-allocator",
+    "async",
+] }
+wasmtime-wasi = { version = "25.0" }
+
+# ── Async trait (required to impl wasmtime::ResourceLimiterAsync) ──────────────
+async-trait   = "0.1"
+
+# ── Async runtime ───────────────────────────────────────────────────────────────
+tokio         = { version = "1.37", features = ["full"] }
+tokio-stream  = { version = "0.1",  features = ["sync"] }
+tokio-util    = { version = "0.7",  features = ["codec"] }
+futures       = "0.3"
+
+# ── HTTP server (Control Plane API) ─────────────────────────────────────────────
+axum          = { version = "0.7",  features = ["ws", "macros"] }
+tower         = "0.4"
+tower-http    = { version = "0.5",  features = ["cors", "trace"] }
+
+# ── Serialisation ───────────────────────────────────────────────────────────────
+serde         = { version = "1",    features = ["derive"] }
+serde_json    = "1"
+# Base64 for WASM payload transport over JSON
+base64        = "0.22"
+
+# ── Error handling ──────────────────────────────────────────────────────────────
+thiserror     = "1.0"
+anyhow        = "1.0"
+
+# ── Observability ───────────────────────────────────────────────────────────────
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# ── Concurrent data structures ──────────────────────────────────────────────────
+# DashMap     : lock-free concurrent HashMap — inflight sandbox registry
+# parking_lot : faster Mutex/RwLock replacing std::sync (no poisoning overhead)
+dashmap     = "5.5"
+parking_lot = "0.12"
+
+# ── System monitoring (RSS watchdog) ────────────────────────────────────────────
+# sysinfo 0.30+ returns RSS in bytes (not KB as in older versions).
+# We use it for the O(1) per-process RSS probe in ResourceMonitor.
+sysinfo = "0.30"
+
+# ── Utilities ────────────────────────────────────────────────────────────────────
+uuid  = { version = "1.8", features = ["v4"] }
+bytes = "1.6"
+rand  = "0.8"
+
+# ─── Dev / test dependencies ───────────────────────────────────────────────────
+[dev-dependencies]
+# wat: compile WebAssembly text format (.wat) to binary in tests
+wat        = "1"
+tokio-test = "0.4"
+
+# ─── Build profiles ────────────────────────────────────────────────────────────
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+# 'abort' on panic: a panicking sandbox host must die immediately rather than
+# unwind into adjacent tenants' stacks.  Watchdog restarts the slot.
+panic         = "abort"
+
+[profile.dev]
+# opt-level 1 keeps the binary debuggable but compiles Cranelift fast enough
+# for integration tests to complete in reasonable time.
+opt-level = 1

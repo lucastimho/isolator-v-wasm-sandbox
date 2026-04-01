@@ -1,0 +1,33 @@
+//! # wasm-worker-manager — Library Root
+//!
+//! Re-exports the core public API so the crate can be used both as a binary
+//! (via `src/main.rs`) and as a library dependency in integration tests or
+//! downstream orchestration crates.
+//!
+//! ## Module map
+//!
+//! ```text
+//! wasm_worker_manager
+//! ├── error            — SandboxError + Result alias
+//! ├── vfs              — In-memory WASI VFS (BTreeMap + RingBuffer)
+//! ├── sandbox_pool     — SandboxPool, PoolConfig, ExecutionResult
+//! ├── resource_monitor — ResourceMonitor, SandboxResourceLimiter, epoch ticker
+//! └── api              — Axum router, AppState, SSE bridge
+//! ```
+
+#![warn(clippy::all, clippy::pedantic)]
+#![allow(clippy::module_name_repetitions)]
+
+pub mod error;
+pub mod resource_monitor;
+pub mod sandbox_pool;
+pub mod vfs;
+pub mod api;
+
+// ── Convenience re-exports ────────────────────────────────────────────────────
+
+pub use error::{Result, SandboxError};
+pub use sandbox_pool::{ExecutionResult, PoolConfig, SandboxPool};
+pub use vfs::VfsState;
+pub use resource_monitor::{ResourceMonitor, SandboxResourceLimiter};
+pub use api::{AppState, build_router};
