@@ -143,8 +143,14 @@ func main() {
 	tb := ratelimit.New(rdb, cfg.RateLimitRPS, cfg.RateLimitBurst)
 
 	// ── HTTP server ────────────────────────────────────────────────────────
+	var vfsStore api.VFSStore
+	if sync != nil {
+		vfsStore = sync // WriteBehindSync implements api.VFSStore
+	}
+
 	router := api.NewRouter(api.ServerConfig{
 		Manager:     manager,
+		VFS:         vfsStore,
 		TokenBucket: tb,
 		JWTSecret:   cfg.JWTSecret,
 		Log:         log.Named("api"),

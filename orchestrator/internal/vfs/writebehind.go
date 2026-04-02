@@ -216,6 +216,56 @@ func (s *WriteBehindSync) Flush(ctx context.Context) error {
 	return nil
 }
 
+// ── Read path ─────────────────────────────────────────────────────────────────
+
+// FileEntry is a single VFS file record belonging to a session.
+type FileEntry struct {
+	Path string
+	Size int64
+}
+
+// QueryEntries returns all distinct file paths persisted for sessionID,
+// along with their most-recent byte-length.  Results are ordered by path.
+func (s *WriteBehindSync) QueryEntries(ctx context.Context, sessionID string) ([]FileEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT path, LENGTH(data) AS size
+		FROM vfs_snapshots
+		WHERE session_id = ?
+		GROUP BY path
+		ORDER BY path
+	`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("vfs: query entries: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []FileEntry
+	for rows.Next() {
+		var e FileEntry
+		if err := rows.Scan(&e.Path, &e.Size); err != nil {
+			return nil, fmt.Errorf("vfs: scan entry: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// QueryFile returns the most-recent content blob for path within sessionID.
+// Returns sql.ErrNoRows (via errors.Is) when the path has not been persisted.
+func (s *WriteBehindSync) QueryFile(ctx context.Context, sessionID, path string) ([]byte, error) {
+	var data []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT data FROM vfs_snapshots
+		WHERE session_id = ? AND path = ?
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, sessionID, path).Scan(&data)
+	if err != nil {
+		return nil, fmt.Errorf("vfs: query file %q: %w", path, err)
+	}
+	return data, nil
+}
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 // Close stops the flush goroutine, performs a final flush, and closes the

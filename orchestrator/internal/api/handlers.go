@@ -2,26 +2,41 @@
 package api
 
 import (
+	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
+	chi "github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
+	"nhooyr.io/websocket"
+	"nhooyr.io/websocket/wsjson"
 
 	"github.com/lucasho/isolator-v/orchestrator/internal/pool"
+	vfspkg "github.com/lucasho/isolator-v/orchestrator/internal/vfs"
 	"github.com/lucasho/isolator-v/orchestrator/internal/worker"
 )
+
+// VFSStore is the minimal read interface the API needs from the VFS package.
+type VFSStore interface {
+	QueryEntries(ctx context.Context, sessionID string) ([]vfspkg.FileEntry, error)
+	QueryFile(ctx context.Context, sessionID, path string) ([]byte, error)
+}
 
 // Handler holds the dependencies injected into every HTTP handler.
 type Handler struct {
 	manager *pool.Manager
+	vfs     VFSStore // nil when VFS persistence is disabled
 	log     *zap.Logger
 }
 
 // NewHandler constructs a Handler.
-func NewHandler(manager *pool.Manager, log *zap.Logger) *Handler {
-	return &Handler{manager: manager, log: log}
+func NewHandler(manager *pool.Manager, vfs VFSStore, log *zap.Logger) *Handler {
+	return &Handler{manager: manager, vfs: vfs, log: log}
 }
 
 // ── POST /execute ─────────────────────────────────────────────────────────────
@@ -111,6 +126,254 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		"ts":     time.Now().UTC().Format(time.RFC3339),
 		"pool":   stats,
 	})
+}
+
+// ── GET /vitals/{sessionId} ───────────────────────────────────────────────────
+
+// vitalsResp is the JSON shape returned to the frontend AgentVitals component.
+type vitalsResp struct {
+	MemUsedBytes  int64   `json:"mem_used_bytes"`
+	MemLimitBytes int64   `json:"mem_limit_bytes"`
+	CPUPct        float64 `json:"cpu_pct"`
+	PoolActive    int     `json:"pool_active"`
+	PoolCapacity  int     `json:"pool_capacity"`
+}
+
+const memLimitBytes int64 = 50 * 1024 * 1024 // 50 MB matches frontend constant
+
+func (h *Handler) Vitals(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "sessionId")
+
+	stats    := h.manager.Stats()
+	warmSlots, _ := stats["warm_slots"].(int)
+	poolCap,  _ := stats["pool_cap"].(int)
+	// "active" workers = capacity minus those waiting in the warm pool.
+	active   := poolCap - warmSlots
+	if active < 0 {
+		active = 0
+	}
+
+	// Compute memory proxy: sum of VFS snapshot sizes for this session.
+	var memUsed int64
+	if h.vfs != nil && sessionID != "" {
+		entries, err := h.vfs.QueryEntries(r.Context(), sessionID)
+		if err != nil {
+			h.log.Warn("vitals: vfs query failed", zap.String("session", sessionID), zap.Error(err))
+		}
+		for _, e := range entries {
+			memUsed += e.Size
+		}
+	}
+
+	// CPU proxy: fraction of pool workers currently executing.
+	var cpuPct float64
+	if poolCap > 0 {
+		cpuPct = float64(active) / float64(poolCap) * 100
+	}
+
+	jsonOK(w, vitalsResp{
+		MemUsedBytes:  memUsed,
+		MemLimitBytes: memLimitBytes,
+		CPUPct:        cpuPct,
+		PoolActive:    active,
+		PoolCapacity:  poolCap,
+	})
+}
+
+// ── GET /vfs/{sessionId} ─────────────────────────────────────────────────────
+
+type vfsListEntry struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+}
+
+func (h *Handler) VFSList(w http.ResponseWriter, r *http.Request) {
+	if h.vfs == nil {
+		jsonError(w, "vfs persistence disabled", http.StatusServiceUnavailable)
+		return
+	}
+	sessionID := chi.URLParam(r, "sessionId")
+	entries, err := h.vfs.QueryEntries(r.Context(), sessionID)
+	if err != nil {
+		h.log.Error("vfs list failed", zap.String("session", sessionID), zap.Error(err))
+		jsonError(w, fmt.Sprintf("vfs list: %s", err), http.StatusInternalServerError)
+		return
+	}
+
+	out := make([]vfsListEntry, len(entries))
+	for i, e := range entries {
+		out[i] = vfsListEntry{Path: e.Path, Size: e.Size}
+	}
+	jsonOK(w, out)
+}
+
+// ── GET /vfs/{sessionId}/file?path= ──────────────────────────────────────────
+
+func (h *Handler) VFSFile(w http.ResponseWriter, r *http.Request) {
+	if h.vfs == nil {
+		jsonError(w, "vfs persistence disabled", http.StatusServiceUnavailable)
+		return
+	}
+	sessionID := chi.URLParam(r, "sessionId")
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		jsonError(w, "path query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	data, err := h.vfs.QueryFile(r.Context(), sessionID, path)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			jsonError(w, "file not found", http.StatusNotFound)
+			return
+		}
+		h.log.Error("vfs file fetch failed",
+			zap.String("session", sessionID),
+			zap.String("path", path),
+			zap.Error(err),
+		)
+		jsonError(w, fmt.Sprintf("vfs file: %s", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Serve with a sensible Content-Type based on extension.
+	ct := contentTypeFor(path)
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// contentTypeFor maps common VFS path extensions to MIME types.
+func contentTypeFor(path string) string {
+	switch {
+	case hasSuffix(path, ".json", ".plot"):
+		return "application/json"
+	case hasSuffix(path, ".csv"):
+		return "text/csv; charset=utf-8"
+	case hasSuffix(path, ".wasm"):
+		return "application/wasm"
+	case hasSuffix(path, ".txt", ".log", ".md"):
+		return "text/plain; charset=utf-8"
+	case hasSuffix(path, ".png"):
+		return "image/png"
+	case hasSuffix(path, ".jpg", ".jpeg"):
+		return "image/jpeg"
+	case hasSuffix(path, ".svg"):
+		return "image/svg+xml"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+func hasSuffix(s string, suffixes ...string) bool {
+	for _, suf := range suffixes {
+		n := len(s)
+		if n >= len(suf) && s[n-len(suf):] == suf {
+			return true
+		}
+	}
+	return false
+}
+
+// ── GET /ws/execute (WebSocket) ───────────────────────────────────────────────
+//
+// Protocol:
+//   Client → server: JSON  { wasm_b64, label, session_id, timeout_ms }
+//   Server → client: binary frames  (raw stdout/stderr bytes as they arrive)
+//   Server → client: JSON final     { type:"exit", code:<int>, elapsed_ms:<int> }
+
+type wsExecuteReq struct {
+	WASMB64   string `json:"wasm_b64"`
+	Label     string `json:"label"`
+	SessionID string `json:"session_id"`
+	TimeoutMS uint64 `json:"timeout_ms"`
+}
+
+func (h *Handler) WSExecute(w http.ResponseWriter, r *http.Request) {
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		InsecureSkipVerify: true, // origin check handled by JWT middleware upstream
+	})
+	if err != nil {
+		h.log.Warn("ws: accept failed", zap.Error(err))
+		return
+	}
+	defer conn.CloseNow() //nolint:errcheck
+
+	ctx := conn.CloseRead(r.Context())
+
+	// Read the single execute-request message.
+	var req wsExecuteReq
+	if err := wsjson.Read(ctx, conn, &req); err != nil {
+		h.log.Debug("ws: read request failed", zap.Error(err))
+		return
+	}
+
+	if req.WASMB64 == "" {
+		_ = wsjson.Write(ctx, conn, map[string]any{"type": "error", "message": "wasm_b64 required"})
+		conn.Close(websocket.StatusUnsupportedData, "wasm_b64 required")
+		return
+	}
+
+	wasmBytes, err := base64.StdEncoding.DecodeString(req.WASMB64)
+	if err != nil {
+		_ = wsjson.Write(ctx, conn, map[string]any{"type": "error", "message": "invalid base64"})
+		conn.Close(websocket.StatusUnsupportedData, "invalid wasm_b64")
+		return
+	}
+
+	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
+	result, err := h.manager.Execute(ctx, &worker.ExecuteRequest{
+		WASMBytes: wasmBytes,
+		Label:     req.Label,
+		SessionID: req.SessionID,
+		Timeout:   timeout,
+	})
+	if err != nil {
+		_ = wsjson.Write(ctx, conn, map[string]any{"type": "error", "message": err.Error()})
+		conn.Close(websocket.StatusInternalError, "execution failed")
+		return
+	}
+
+	// Stream stdout as binary frames (chunked to avoid large single write).
+	const chunkSize = 4096
+	for i := 0; i < len(result.Stdout); i += chunkSize {
+		end := i + chunkSize
+		if end > len(result.Stdout) {
+			end = len(result.Stdout)
+		}
+		if err := conn.Write(ctx, websocket.MessageBinary, result.Stdout[i:end]); err != nil {
+			return
+		}
+	}
+	// Stream stderr similarly (prefixed with ANSI red so it's visually distinct).
+	if len(result.Stderr) > 0 {
+		prefix := []byte("\x1b[31m")
+		suffix := []byte("\x1b[0m")
+		for i := 0; i < len(result.Stderr); i += chunkSize {
+			end := i + chunkSize
+			if end > len(result.Stderr) {
+				end = len(result.Stderr)
+			}
+			frame := append(prefix, result.Stderr[i:end]...)
+			frame = append(frame, suffix...)
+			if err := conn.Write(ctx, websocket.MessageBinary, frame); err != nil {
+				return
+			}
+		}
+	}
+
+	// Send final exit message.
+	_ = wsjson.Write(ctx, conn, map[string]any{
+		"type":       "exit",
+		"code":       result.ExitCode,
+		"elapsed_ms": result.TotalMS,
+	})
+	conn.Close(websocket.StatusNormalClosure, "done")
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

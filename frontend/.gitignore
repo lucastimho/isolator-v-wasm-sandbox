@@ -1,0 +1,16 @@
+# ── Dependencies ───────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Next.js build output ──────────────────────────────────────────────────────
+.next/
+out/
+
+# ── TypeScript cache ──────────────────────────────────────────────────────────
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# ── Misc ───────────────────────────────────────────────────────────────────────
+.env*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

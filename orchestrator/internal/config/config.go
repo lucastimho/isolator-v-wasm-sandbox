@@ -1,7 +1,9 @@
-// Package config reads orchestrator configuration from environment variables.
+// Package config reads orchestrator configuration from environment variables,
+// with optional .env file support.
 package config
 
 import (
+	"bufio"
 	"os"
 	"strconv"
 	"strings"
@@ -46,10 +48,56 @@ type Config struct {
 	VFSSyncInterval time.Duration
 }
 
+// loadDotEnv reads KEY=VALUE pairs from a .env file and sets them as
+// environment variables, but only for keys that are not already set.
+// Blank lines and lines starting with # are ignored.
+// The file is looked up relative to the current working directory, so it
+// works correctly when you run `go run ./cmd/server` from the orchestrator
+// root as well as when running a compiled binary from the same directory.
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return // .env is optional — silently skip if missing
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx < 1 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+		// Strip inline comments (e.g. RATE_LIMIT_RPS=100  # comment)
+		if ci := strings.IndexByte(val, '#'); ci >= 0 {
+			val = strings.TrimSpace(val[:ci])
+		}
+		// Strip matching outer quotes (" or ')
+		if len(val) >= 2 {
+			if (val[0] == '"' && val[len(val)-1] == '"') ||
+				(val[0] == '\'' && val[len(val)-1] == '\'') {
+				val = val[1 : len(val)-1]
+			}
+		}
+		// Only set if not already provided by the real environment.
+		if os.Getenv(key) == "" {
+			_ = os.Setenv(key, val)
+		}
+	}
+}
+
 // Load reads configuration from environment variables, applying sensible
 // defaults for every value so the orchestrator runs out of the box for local
-// development with just a Rust worker on localhost:3000 and Redis on 6379.
+// development.  A .env file in the working directory is loaded first so that
+// `cp .env.example .env && $EDITOR .env && go run ./cmd/server` works
+// without manually exporting variables.
 func Load() *Config {
+	loadDotEnv(".env")
 	return &Config{
 		Port:            env("PORT", "8080"),
 		WorkerAddrs:     splitTrim(env("WORKER_ADDRS", "http://localhost:3000"), ","),
