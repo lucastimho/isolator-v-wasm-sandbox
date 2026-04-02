@@ -291,8 +291,15 @@ type wsExecuteReq struct {
 }
 
 func (h *Handler) WSExecute(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session_id")
+	h.log.Debug("[ws:1/6] upgrade: accepting WebSocket connection",
+		zap.String("session_id", sessionID),
+		zap.String("remote", r.RemoteAddr),
+	)
+
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true, // origin check handled by JWT middleware upstream
+		InsecureSkipVerify: true,                     // origin check handled by JWT middleware upstream
+		CompressionMode:    websocket.CompressionDisabled, // prevent RSV-bit mismatch with browsers
 	})
 	if err != nil {
 		h.log.Warn("ws: accept failed", zap.Error(err))
@@ -300,27 +307,52 @@ func (h *Handler) WSExecute(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.CloseNow() //nolint:errcheck
 
-	ctx := conn.CloseRead(r.Context())
+	h.log.Debug("[ws:2/6] upgrade: WebSocket accepted — waiting for execute request",
+		zap.String("session_id", sessionID),
+	)
 
-	// Read the single execute-request message.
+	// Read the execute request using the plain HTTP request context.
+	// IMPORTANT: do NOT call conn.CloseRead before this — CloseRead starts a
+	// goroutine that discards incoming data frames, which would consume the
+	// client's first (and only) message before wsjson.Read can see it.
 	var req wsExecuteReq
-	if err := wsjson.Read(ctx, conn, &req); err != nil {
+	if err := wsjson.Read(r.Context(), conn, &req); err != nil {
 		h.log.Debug("ws: read request failed", zap.Error(err))
 		return
 	}
 
+	h.log.Debug("[ws:3/6] request received",
+		zap.String("session_id", req.SessionID),
+		zap.String("label", req.Label),
+		zap.Int("wasm_b64_len", len(req.WASMB64)),
+		zap.Uint64("timeout_ms", req.TimeoutMS),
+	)
+
 	if req.WASMB64 == "" {
-		_ = wsjson.Write(ctx, conn, map[string]any{"type": "error", "message": "wasm_b64 required"})
+		h.log.Warn("ws: missing wasm_b64", zap.String("session_id", req.SessionID))
+		_ = wsjson.Write(r.Context(), conn, map[string]any{"type": "error", "message": "wasm_b64 required"})
 		conn.Close(websocket.StatusUnsupportedData, "wasm_b64 required")
 		return
 	}
 
 	wasmBytes, err := base64.StdEncoding.DecodeString(req.WASMB64)
 	if err != nil {
-		_ = wsjson.Write(ctx, conn, map[string]any{"type": "error", "message": "invalid base64"})
+		h.log.Warn("ws: invalid base64", zap.String("session_id", req.SessionID), zap.Error(err))
+		_ = wsjson.Write(r.Context(), conn, map[string]any{"type": "error", "message": "invalid base64"})
 		conn.Close(websocket.StatusUnsupportedData, "invalid wasm_b64")
 		return
 	}
+
+	h.log.Debug("[ws:4/6] WASM decoded — handing off to pool.Manager.Execute",
+		zap.String("session_id", req.SessionID),
+		zap.Int("wasm_bytes", len(wasmBytes)),
+	)
+
+	// Now that we've read the only inbound message, start CloseRead.  This
+	// discards any further client→server frames and returns a context that is
+	// cancelled if the client disconnects, so long-running WASM jobs are
+	// cancelled automatically when the browser tab closes.
+	ctx := conn.CloseRead(r.Context())
 
 	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
 	if timeout == 0 {
@@ -334,10 +366,21 @@ func (h *Handler) WSExecute(w http.ResponseWriter, r *http.Request) {
 		Timeout:   timeout,
 	})
 	if err != nil {
+		h.log.Warn("ws: execution failed",
+			zap.String("session_id", req.SessionID),
+			zap.Error(err),
+		)
 		_ = wsjson.Write(ctx, conn, map[string]any{"type": "error", "message": err.Error()})
 		conn.Close(websocket.StatusInternalError, "execution failed")
 		return
 	}
+
+	h.log.Debug("[ws:5/6] execution complete — streaming output",
+		zap.String("session_id", req.SessionID),
+		zap.Int("stdout_bytes", len(result.Stdout)),
+		zap.Int("stderr_bytes", len(result.Stderr)),
+		zap.Int32("exit_code", result.ExitCode),
+	)
 
 	// Stream stdout as binary frames (chunked to avoid large single write).
 	const chunkSize = 4096
@@ -373,6 +416,12 @@ func (h *Handler) WSExecute(w http.ResponseWriter, r *http.Request) {
 		"code":       result.ExitCode,
 		"elapsed_ms": result.TotalMS,
 	})
+
+	h.log.Debug("[ws:6/6] exit frame sent — closing connection",
+		zap.String("session_id", req.SessionID),
+		zap.Int32("exit_code", result.ExitCode),
+		zap.Uint64("total_ms", result.TotalMS),
+	)
 	conn.Close(websocket.StatusNormalClosure, "done")
 }
 

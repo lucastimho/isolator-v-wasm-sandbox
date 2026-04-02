@@ -477,8 +477,14 @@ export default function VirtualFileTree({
           dispatch({ type: "TOGGLE_DIR", path: "/src" });
           dispatch({ type: "TOGGLE_DIR", path: "/output" });
         }
+      } else if (result.status === 503) {
+        // 503 = VFS persistence disabled on the orchestrator (LIBSQL_URL not
+        // set).  The orchestrator itself is reachable — don't show the offline
+        // banner.  Poll at a slow fixed interval since the config won't change
+        // without a server restart.
+        backoffMs = POLL_MAX_MS;
       } else if (result.networkError || (result.status !== undefined && result.status >= 500)) {
-        // Orchestrator unreachable or server error — back off exponentially.
+        // True server error or network unreachable — back off exponentially.
         dispatch({ type: "SET_OFFLINE", offline: true });
         backoffMs = Math.min(backoffMs * 2, POLL_MAX_MS);
       }
@@ -530,7 +536,7 @@ export default function VirtualFileTree({
     <div className="flex items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-2">
       <WifiOff className="h-3.5 w-3.5 shrink-0 text-[var(--color-warn)]" />
       <span className="flex-1 font-mono text-[10px] text-[var(--color-text-muted)]">
-        Orchestrator offline — retrying…
+        Orchestrator unreachable — retrying…
       </span>
       <RefreshCw className="h-3 w-3 animate-spin text-[var(--color-text-muted)] opacity-60" />
     </div>
@@ -544,7 +550,7 @@ export default function VirtualFileTree({
           <WifiOff className="h-7 w-7 text-[var(--color-warn)] opacity-60" />
           <div className="space-y-1">
             <p className="font-mono text-[10px] font-medium uppercase tracking-widest text-[var(--color-text-muted)]">
-              Orchestrator offline
+              Orchestrator unreachable
             </p>
             <p className="text-[10px] text-[var(--color-text-muted)]">
               Retrying automatically…

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // HTTPWorkerClient implements Client by calling the existing Rust
@@ -16,6 +18,7 @@ import (
 type HTTPWorkerClient struct {
 	addr       string
 	httpClient *http.Client
+	log        *zap.Logger
 }
 
 // NewHTTPClient constructs a pooled HTTP client pointed at the given worker address.
@@ -23,6 +26,7 @@ type HTTPWorkerClient struct {
 func NewHTTPClient(addr string) *HTTPWorkerClient {
 	return &HTTPWorkerClient{
 		addr: addr,
+		log:  zap.NewNop(), // replaced by NewHTTPClientWithLogger in production
 		httpClient: &http.Client{
 			// Outer timeout is controlled by the caller's context; this is a
 			// safety net only.
@@ -34,6 +38,14 @@ func NewHTTPClient(addr string) *HTTPWorkerClient {
 			},
 		},
 	}
+}
+
+// NewHTTPClientWithLogger constructs a client that emits debug-level traces.
+// Use this instead of NewHTTPClient when a logger is available (e.g. in main).
+func NewHTTPClientWithLogger(addr string, log *zap.Logger) *HTTPWorkerClient {
+	c := NewHTTPClient(addr)
+	c.log = log
+	return c
 }
 
 // ── Execute ───────────────────────────────────────────────────────────────────
@@ -71,6 +83,13 @@ func (c *HTTPWorkerClient) Execute(ctx context.Context, req *ExecuteRequest) (*E
 		return nil, fmt.Errorf("worker/http marshal: %w", err)
 	}
 
+	c.log.Debug("[http-worker] sending POST /execute to worker",
+		zap.String("addr", c.addr),
+		zap.String("label", req.Label),
+		zap.Int("body_bytes", len(data)),
+	)
+	t0 := time.Now()
+
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.addr+"/execute", bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("worker/http build request: %w", err)
@@ -79,14 +98,34 @@ func (c *HTTPWorkerClient) Execute(ctx context.Context, req *ExecuteRequest) (*E
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		c.log.Debug("[http-worker] POST /execute network error",
+			zap.String("addr", c.addr),
+			zap.Duration("elapsed", time.Since(t0)),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("worker/http do: %w", err)
 	}
 	defer resp.Body.Close()
+
+	c.log.Debug("[http-worker] POST /execute response received",
+		zap.String("addr", c.addr),
+		zap.Int("status", resp.StatusCode),
+		zap.Duration("elapsed", time.Since(t0)),
+	)
 
 	var result rustExecuteResp
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("worker/http decode [%d]: %w", resp.StatusCode, err)
 	}
+
+	c.log.Debug("[http-worker] response decoded",
+		zap.String("addr", c.addr),
+		zap.String("sandbox_id", result.SandboxID),
+		zap.Int32("exit_code", result.ExitCode),
+		zap.Uint64("worker_elapsed_ms", result.ElapsedMS),
+		zap.Int("stdout_bytes", len(result.Stdout)),
+		zap.Int("stderr_bytes", len(result.Stderr)),
+	)
 
 	if resp.StatusCode >= 400 || result.Error != "" {
 		return nil, fmt.Errorf("worker error %d (%s): %s", resp.StatusCode, result.Code, result.Error)

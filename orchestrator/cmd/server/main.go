@@ -27,6 +27,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/lucasho/isolator-v/orchestrator/internal/api"
 	"github.com/lucasho/isolator-v/orchestrator/internal/config"
@@ -38,15 +39,23 @@ import (
 )
 
 func main() {
+	// ── Config (loaded before logger so LOG_LEVEL is available) ──────────
+	cfg := config.Load()
+
 	// ── Structured logger ──────────────────────────────────────────────────
-	log, err := zap.NewProduction()
+	// LOG_LEVEL=debug emits per-stage execution traces useful for debugging
+	// hangs in the request lifecycle.  Production default is "info".
+	var zapLevel zapcore.Level
+	if err := zapLevel.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
+		zapLevel = zapcore.InfoLevel
+	}
+	zapCfg := zap.NewProductionConfig()
+	zapCfg.Level = zap.NewAtomicLevelAt(zapLevel)
+	log, err := zapCfg.Build()
 	if err != nil {
 		panic("failed to initialise logger: " + err.Error())
 	}
 	defer log.Sync() //nolint:errcheck
-
-	// ── Config ─────────────────────────────────────────────────────────────
-	cfg := config.Load()
 
 	log.Info("isolator-v orchestrator starting",
 		zap.String("port", cfg.Port),
@@ -71,7 +80,7 @@ func main() {
 			}
 			clients = append(clients, c)
 		default: // "http"
-			clients = append(clients, worker.NewHTTPClient(addr))
+			clients = append(clients, worker.NewHTTPClientWithLogger(addr, log.Named("http-worker")))
 		}
 		log.Info("registered worker",
 			zap.String("addr", addr),

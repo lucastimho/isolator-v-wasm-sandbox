@@ -21,6 +21,8 @@ interface TerminalProps {
   sessionId: string | null;
   /** When false the WS is not opened (even if sessionId is set). */
   running: boolean;
+  /** Base64-encoded WASM binary to execute.  Sent as the first WebSocket frame. */
+  wasmB64?: string;
 }
 
 // The maximum number of bytes we'll batch into a single write call.
@@ -30,14 +32,13 @@ const MAX_BYTES_PER_FRAME = 32_768; // 32 KB
 
 // ── Component ──────────────────────────────────────────────────────────────
 
-export default function Terminal({ sessionId, running }: TerminalProps) {
+export default function Terminal({ sessionId, running, wasmB64 }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Xterm / addon refs — we hold them in refs so the cleanup effect can
   // reach them without stale closure issues.
   const xtermRef = useRef<import("@xterm/xterm").Terminal | null>(null);
   const fitRef = useRef<import("@xterm/addon-fit").FitAddon | null>(null);
-  const webglRef = useRef<import("@xterm/addon-webgl").WebglAddon | null>(null);
 
   // Back-pressure buffer
   const bufferRef = useRef<Uint8Array[]>([]);
@@ -54,12 +55,15 @@ export default function Terminal({ sessionId, running }: TerminalProps) {
 
     let disposed = false;
 
-    // Dynamic imports keep Xterm off the server bundle
+    // Dynamic imports keep Xterm off the server bundle.
+    // We intentionally skip the WebglAddon: WebGL renders text on a canvas
+    // that can silently produce a blank viewport on some GPU/driver combos
+    // (cursor stays visible because it's a DOM overlay, not on the canvas).
+    // The Canvas 2D renderer is slower but rock-solid across all hardware.
     Promise.all([
       import("@xterm/xterm"),
       import("@xterm/addon-fit"),
-      import("@xterm/addon-webgl"),
-    ]).then(([{ Terminal: XTerm }, { FitAddon }, { WebglAddon }]) => {
+    ]).then(([{ Terminal: XTerm }, { FitAddon }]) => {
       if (disposed || !containerRef.current) return;
 
       const term = new XTerm({
@@ -67,10 +71,10 @@ export default function Terminal({ sessionId, running }: TerminalProps) {
         fontSize: 13,
         lineHeight: 1.45,
         theme: {
-          background:  "transparent",
+          background:  "#08080a",
           foreground:  "#e8e8f0",
           cursor:      "#6366f1",
-          cursorAccent:"#08080a",
+          cursorAccent:"#f1f5f9",
           selectionBackground: "rgba(99,102,241,0.3)",
           black:   "#1e1e26", red:     "#f87171", green:  "#4ade80",
           yellow:  "#facc15", blue:    "#60a5fa", magenta:"#c084fc",
@@ -80,7 +84,6 @@ export default function Terminal({ sessionId, running }: TerminalProps) {
           brightBlue:    "#818cf8", brightMagenta:"#a855f7",
           brightCyan:    "#06b6d4", brightWhite:  "#f1f5f9",
         },
-        allowTransparency: true,
         cursorBlink: true,
         scrollback: 5_000,
         convertEol: true,
@@ -89,37 +92,25 @@ export default function Terminal({ sessionId, running }: TerminalProps) {
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(containerRef.current!);
-      fit.fit();
 
-      // WebGL — gracefully falls back if context unavailable
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => {
-          webgl.dispose();
-          webglRef.current = null;
-        });
-        term.loadAddon(webgl);
-        webglRef.current = webgl;
-      } catch {
-        // Canvas 2D fallback is fine
-      }
+      // Defer the first fit() one frame so react-resizable-panels has time to
+      // set its CSS-based panel dimensions before xterm measures the container.
+      // Without this, the terminal can open with 0×0 columns and text written
+      // before the resize observer fires gets dropped.
+      requestAnimationFrame(() => {
+        fit.fit();
 
-      xtermRef.current = term;
-      fitRef.current = fit;
+        xtermRef.current = term;
+        fitRef.current = fit;
 
-      // Welcome banner
-      term.writeln(
-        "\x1b[38;5;99m╔══════════════════════════════════════════╗\x1b[0m"
-      );
-      term.writeln(
-        "\x1b[38;5;99m║  \x1b[1mIsolator-V Execution Terminal\x1b[0m\x1b[38;5;99m          ║\x1b[0m"
-      );
-      term.writeln(
-        "\x1b[38;5;99m╚══════════════════════════════════════════╝\x1b[0m"
-      );
-      term.writeln(
-        "\x1b[38;5;240mPress \x1b[0m\x1b[1mRun\x1b[0m\x1b[38;5;240m to start the sandbox session.\x1b[0m\r\n"
-      );
+        console.log("[Terminal] xterm initialised, writing welcome banner");
+
+        // Welcome banner — written after fit() so the canvas is properly sized.
+        term.writeln("\x1b[38;5;99m╔══════════════════════════════════════════╗\x1b[0m");
+        term.writeln("\x1b[38;5;99m║  \x1b[1mIsolator-V Execution Terminal\x1b[0m\x1b[38;5;99m          ║\x1b[0m");
+        term.writeln("\x1b[38;5;99m╚══════════════════════════════════════════╝\x1b[0m");
+        term.writeln("\x1b[38;5;240mPress \x1b[0m\x1b[1mRun\x1b[0m\x1b[38;5;240m to start the sandbox session.\x1b[0m\r\n");
+      });
     });
 
     return () => {
@@ -175,20 +166,83 @@ export default function Terminal({ sessionId, running }: TerminalProps) {
   useEffect(() => {
     if (!running || !sessionId) return;
 
+    // Snapshot the current xterm instance.  If it's still loading (Promise.all
+    // not yet resolved) this will be null; writeln calls below use optional
+    // chaining so they silently no-op, but ws.send() does NOT depend on term.
     const term = xtermRef.current;
 
-    // Build the WebSocket URL; works for both http and https hosts
-    const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const url = `${proto}://${window.location.host}/api/v1/ws/execute?session_id=${encodeURIComponent(sessionId)}`;
+    console.log("[Terminal] WS effect running", {
+      sessionId,
+      running,
+      termReady: !!term,
+      wasmB64Len: wasmB64?.length ?? 0,
+    });
+
+    // Build the WebSocket URL.
+    //
+    // Next.js rewrites cannot proxy WebSocket upgrades — the rewrite proxy
+    // wraps http.ResponseWriter in a way that removes http.Hijacker, causing
+    // the Go orchestrator's websocket.Accept() to fail.  We therefore connect
+    // directly to the orchestrator using NEXT_PUBLIC_ORCHESTRATOR_URL, which
+    // is set in .env.local for local dev and in the deployment environment for
+    // production.  REST calls still flow through the /api/v1/* rewrite.
+    const orchestratorBase = process.env.NEXT_PUBLIC_ORCHESTRATOR_URL ?? "";
+    let url: string;
+    if (orchestratorBase) {
+      const wsBase = orchestratorBase.replace(/^http/, "ws");
+      url = `${wsBase}/ws/execute?session_id=${encodeURIComponent(sessionId)}`;
+    } else {
+      // Fallback: same-origin path (works when orchestrator is colocated or
+      // behind a reverse proxy that correctly handles WS upgrades).
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      url = `${proto}://${window.location.host}/api/v1/ws/execute?session_id=${encodeURIComponent(sessionId)}`;
+    }
+
+    console.log("[Terminal] connecting WebSocket →", url);
 
     const ws = new WebSocket(url);
     wsRef.current = ws;
     ws.binaryType = "arraybuffer";
 
+    // Capture wasmB64 in a local variable to avoid stale-closure issues.
+    // (wasmB64 is a prop, so it's safe to read here at effect-run time.)
+    const wasmPayload = wasmB64;
+
     ws.onopen = () => {
-      term?.writeln(
+      console.log("[Terminal] onopen fired, wasmPayload len:", wasmPayload?.length ?? 0, "ws.readyState:", ws.readyState);
+
+      xtermRef.current?.writeln(
         `\r\n\x1b[38;5;240m┌─ connected \x1b[38;5;99m${sessionId}\x1b[0m\r\n`
       );
+
+      // Send the execute request — this is the first (and only) client→server
+      // message.  The server reads it in WSExecute, runs the WASM, and streams
+      // output back as binary frames.
+      if (wasmPayload) {
+        const payload = JSON.stringify({
+          wasm_b64:   wasmPayload,
+          label:      `session-${sessionId}`,
+          session_id: sessionId,
+          timeout_ms: 30_000,
+        });
+        try {
+          ws.send(payload);
+          console.log("[Terminal] execute payload sent, bytes:", payload.length);
+          xtermRef.current?.writeln(
+            "\x1b[38;5;240m│  sent execute request — waiting for output…\x1b[0m\r\n"
+          );
+        } catch (err) {
+          console.error("[Terminal] ws.send() threw:", err);
+          xtermRef.current?.writeln(
+            `\r\n\x1b[31m[terminal] failed to send execute request: ${err}\x1b[0m\r\n`
+          );
+        }
+      } else {
+        console.warn("[Terminal] no wasmPayload in onopen — waiting for input");
+        xtermRef.current?.writeln(
+          "\x1b[38;5;208m│  no WASM binary provided — waiting for input\x1b[0m\r\n"
+        );
+      }
     };
 
     ws.onmessage = (ev) => {
@@ -199,7 +253,8 @@ export default function Terminal({ sessionId, running }: TerminalProps) {
         try {
           const msg = JSON.parse(ev.data) as { type: string; code?: number };
           if (msg.type === "exit") {
-            term?.writeln(
+            console.log("[Terminal] exit frame received, code:", msg.code);
+            xtermRef.current?.writeln(
               `\r\n\x1b[38;5;240m└─ process exited with code \x1b[${
                 msg.code === 0 ? "32" : "31"
               }m${msg.code ?? "?"}\x1b[0m\r\n`
@@ -212,27 +267,30 @@ export default function Terminal({ sessionId, running }: TerminalProps) {
       }
     };
 
-    ws.onerror = () => {
-      term?.writeln(
+    ws.onerror = (ev) => {
+      console.error("[Terminal] WebSocket onerror:", ev);
+      xtermRef.current?.writeln(
         "\r\n\x1b[31m[terminal] WebSocket error — connection lost\x1b[0m\r\n"
       );
     };
 
     ws.onclose = (ev) => {
+      console.log("[Terminal] WebSocket onclose:", { code: ev.code, reason: ev.reason, wasClean: ev.wasClean });
       if (ev.wasClean) return;
-      term?.writeln(
+      xtermRef.current?.writeln(
         `\r\n\x1b[38;5;240m[terminal] disconnected (code ${ev.code})\x1b[0m\r\n`
       );
     };
 
     // Forward keyboard input back to the sandbox stdin
-    const inputDisposer = term?.onData((data) => {
+    const inputDisposer = xtermRef.current?.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(data);
       }
     });
 
     return () => {
+      console.log("[Terminal] WS effect cleanup, ws.readyState:", ws.readyState);
       inputDisposer?.dispose();
       ws.close(1000, "session ended");
       wsRef.current = null;
@@ -244,7 +302,7 @@ export default function Terminal({ sessionId, running }: TerminalProps) {
       bufferRef.current = [];
       pendingBytesRef.current = 0;
     };
-  }, [running, sessionId, enqueue]);
+  }, [running, sessionId, wasmB64, enqueue]);
 
   // ── Dispose xterm on unmount ──────────────────────────────────────────
 
@@ -252,7 +310,6 @@ export default function Terminal({ sessionId, running }: TerminalProps) {
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       wsRef.current?.close(1000, "unmount");
-      webglRef.current?.dispose();
       xtermRef.current?.dispose();
     };
   }, []);
@@ -262,7 +319,8 @@ export default function Terminal({ sessionId, running }: TerminalProps) {
   return (
     <div
       ref={containerRef}
-      className="h-full w-full overflow-hidden bg-transparent"
+      className="h-full w-full overflow-hidden"
+      style={{ background: "#08080a" }}
       aria-label="Execution terminal"
     />
   );

@@ -1,6 +1,9 @@
 package middleware
 
 import (
+	"bufio"
+	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -47,6 +50,19 @@ type statusRecorder struct {
 func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack delegates to the underlying ResponseWriter so that WebSocket
+// upgrades (nhooyr.io/websocket, gorilla/websocket) work correctly.
+// Without this, the type assertion w.(http.Hijacker) fails because the
+// embedded http.ResponseWriter interface only promotes the three methods
+// defined in that interface — not Hijack, which belongs to http.Hijacker.
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("metrics: underlying ResponseWriter (%T) does not implement http.Hijacker", r.ResponseWriter)
+	}
+	return h.Hijack()
 }
 
 // Prometheus records per-route request counts and latency.

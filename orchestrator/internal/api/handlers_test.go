@@ -79,7 +79,7 @@ func newTestServer(t *testing.T, w worker.Client) *testServer {
 	})
 	t.Cleanup(mgr.Close)
 
-	handler := api.NewHandler(mgr, log)
+	handler := api.NewHandler(mgr, nil, log)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /execute", handler.Execute)
 	mux.HandleFunc("GET /health", handler.Health)

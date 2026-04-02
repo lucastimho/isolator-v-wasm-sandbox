@@ -36,6 +36,28 @@ const Terminal = dynamic(() => import("./Terminal"), { ssr: false });
 
 type SandboxState = "idle" | "running" | "crashed" | "complete";
 
+// ── Demo WASM module ──────────────────────────────────────────────────────
+// Minimal valid noop module: (module (func (export "_start")))
+// 34 bytes — magic + version + type/func/export/code sections.
+// This is the same binary used in the backend test suite.
+const DEMO_WASM_BYTES = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+  0x01, 0x04, 0x01, 0x60, 0x00, 0x00,             // type section
+  0x03, 0x02, 0x01, 0x00,                          // function section
+  0x07, 0x0a, 0x01, 0x06, 0x5f, 0x73, 0x74, 0x61, // export "_start"
+  0x72, 0x74, 0x00, 0x00,
+  0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,             // code section
+]);
+
+/** Base64-encode the demo WASM bytes for the WebSocket execute request. */
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
+const DEMO_WASM_B64 = toBase64(DEMO_WASM_BYTES);
+
 // Detect Mac so we show ⌘ vs Ctrl in hints
 const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
 const MOD   = isMac ? "⌘" : "Ctrl";
@@ -365,7 +387,7 @@ export default function ExecutionConsole() {
                     />
                     <div className="flex-1 overflow-hidden">
                       <TerminalErrorBoundary onCrash={handleCrash} onReconnect={handleReconnect}>
-                        <Terminal sessionId={sessionId} running={sandboxState === "running"} />
+                        <Terminal sessionId={sessionId} running={sandboxState === "running"} wasmB64={DEMO_WASM_B64} />
                       </TerminalErrorBoundary>
                     </div>
                   </div>

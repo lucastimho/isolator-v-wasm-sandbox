@@ -1,4 +1,6 @@
 @import "tailwindcss";
+/* xterm.js requires its own stylesheet for correct canvas layout and text rendering */
+@import "@xterm/xterm/css/xterm.css";
 
 /* ── Isolator-V Design Tokens (Tailwind v4 CSS-first config) ──────────────── */
 @theme {

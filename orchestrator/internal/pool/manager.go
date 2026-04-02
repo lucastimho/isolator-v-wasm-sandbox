@@ -135,21 +135,52 @@ func (m *Manager) Execute(ctx context.Context, req *worker.ExecuteRequest) (*Exe
 	execCtx, execCancel := context.WithTimeout(ctx, execTO)
 	defer execCancel()
 
+	m.log.Debug("[1/4] execute: applying timeouts",
+		zap.String("label", req.Label),
+		zap.Duration("exec_timeout", execTO),
+		zap.Duration("acquire_timeout", m.acquireTimeout),
+		zap.Int("pool_len", m.pool.Len()),
+		zap.Int("pool_cap", m.pool.Cap()),
+	)
+
 	// 2 — Acquire a slot (separate, shorter timeout so we fail fast on overload).
 	acquireCtx, acquireCancel := context.WithTimeout(execCtx, m.acquireTimeout)
 	defer acquireCancel()
 
+	m.log.Debug("[2/4] execute: waiting for warm slot",
+		zap.String("label", req.Label),
+	)
+
 	w, err := m.pool.Get(acquireCtx)
 	if err != nil {
+		m.log.Warn("execute: pool acquire failed",
+			zap.String("label", req.Label),
+			zap.Int("pool_len", m.pool.Len()),
+			zap.Int("pool_cap", m.pool.Cap()),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("pool exhausted (capacity=%d): %w", m.pool.Cap(), err)
 	}
 	// Always return the slot so the pool doesn't drain permanently.
 	defer m.pool.Put(w)
 
+	m.log.Debug("[3/4] execute: slot acquired — dispatching to worker",
+		zap.String("label", req.Label),
+		zap.String("worker", w.Addr()),
+		zap.Int("wasm_bytes", len(req.WASMBytes)),
+	)
+
 	// 3 — Execute.
 	start := time.Now()
 	resp, err := w.Execute(execCtx, req)
 	totalMS := uint64(time.Since(start).Milliseconds())
+
+	m.log.Debug("[4/4] execute: worker returned",
+		zap.String("label", req.Label),
+		zap.String("worker", w.Addr()),
+		zap.Uint64("elapsed_ms", totalMS),
+		zap.Bool("error", err != nil),
+	)
 
 	m.totalExecs.Add(1)
 	if err != nil {

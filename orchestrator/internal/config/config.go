@@ -46,6 +46,10 @@ type Config struct {
 
 	// How often to flush buffered VFS changes to the database.
 	VFSSyncInterval time.Duration
+
+	// LogLevel controls zap verbosity: "debug", "info", "warn", "error".
+	// Set LOG_LEVEL=debug to see per-stage execution traces.
+	LogLevel string
 }
 
 // loadDotEnv reads KEY=VALUE pairs from a .env file and sets them as
@@ -110,6 +114,7 @@ func Load() *Config {
 		JWTSecret:       env("JWT_SECRET", ""),
 		LibSQLURL:       env("LIBSQL_URL", ""),
 		VFSSyncInterval: time.Duration(envInt("VFS_SYNC_INTERVAL_MS", 500)) * time.Millisecond,
+		LogLevel:        env("LOG_LEVEL", "info"),
 	}
 }
 
