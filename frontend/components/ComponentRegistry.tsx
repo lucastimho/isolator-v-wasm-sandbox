@@ -32,8 +32,15 @@ import {
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface RegistryProps {
-  filePath:  string;
-  sessionId: string | null;
+  filePath:     string;
+  sessionId:    string | null;
+  /**
+   * When set, the registry uses this content directly and skips the API fetch.
+   * This is used when the VFS snapshot was delivered inline via the WebSocket
+   * exit frame (i.e. LIBSQL_URL is not configured and persistence is disabled).
+   * The string must already be decoded from base64 into UTF-8 text.
+   */
+  inlineContent?: string;
 }
 
 type FetchState<T> =
@@ -467,12 +474,13 @@ function UnsupportedPane({ path }: { path: string }) {
 
 // ── Main registry ──────────────────────────────────────────────────────────
 
-export default function ComponentRegistry({ filePath, sessionId }: RegistryProps) {
+export default function ComponentRegistry({ filePath, sessionId, inlineContent }: RegistryProps) {
   const kind = useMemo(() => detectKind(filePath), [filePath]);
   const [fetchState, setFetchState] = useState<FetchState<string>>({ status: "idle" });
 
-  // Images are served directly by URL — no fetch needed
-  const needsFetch = kind !== "image";
+  // Images are served directly by URL — no fetch needed.
+  // Inline content also skips the fetch path entirely.
+  const needsFetch = kind !== "image" && inlineContent === undefined;
 
   const load = useCallback(async () => {
     if (!needsFetch) return;
@@ -494,6 +502,16 @@ export default function ComponentRegistry({ filePath, sessionId }: RegistryProps
   // Image preview bypasses fetch
   if (kind === "image") {
     return <ImageViewer path={filePath} sessionId={sessionId} />;
+  }
+
+  // Inline content provided via WebSocket exit frame — use it directly
+  if (inlineContent !== undefined) {
+    switch (kind) {
+      case "csv":  return <DataGrid raw={inlineContent} />;
+      case "json": return <ChartView raw={inlineContent} />;
+      case "log":  return <LogViewer raw={inlineContent} />;
+      default:     return <RawViewer raw={inlineContent} />;
+    }
   }
 
   if (fetchState.status === "idle" || fetchState.status === "loading") {

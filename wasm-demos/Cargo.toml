@@ -1,0 +1,49 @@
+[package]
+name    = "wasm-demos"
+version = "0.1.0"
+edition = "2021"
+
+# Each bin target compiles to its own .wasm module.
+# Build all four with:
+#
+#   rustup target add wasm32-wasip1
+#   cargo build --release --target wasm32-wasip1
+#
+# Binaries appear in:
+#   target/wasm32-wasip1/release/{hello,counter,fibonacci,primes}.wasm
+#
+# Then base64-encode for the frontend:
+#   for f in target/wasm32-wasip1/release/{hello,counter,fibonacci,primes}.wasm; do
+#     base64 -i "$f" | tr -d '\n' > "${f%.wasm}.b64"
+#   done
+
+[[bin]]
+name = "hello"
+path = "src/bin/hello.rs"
+
+[[bin]]
+name = "counter"
+path = "src/bin/counter.rs"
+
+[[bin]]
+name = "fibonacci"
+path = "src/bin/fibonacci.rs"
+
+[[bin]]
+name = "primes"
+path = "src/bin/primes.rs"
+
+[[bin]]
+name = "files"
+path = "src/bin/files.rs"
+
+[dependencies]
+# Raw WASI syscall bindings — used by files.rs to call path_open/fd_write/fd_close
+# with absolute paths, bypassing std::fs which requires preopened directories.
+wasi = "0.11"
+
+[profile.release]
+opt-level = "z"   # minimise binary size
+lto       = true
+panic     = "abort"
+strip     = true

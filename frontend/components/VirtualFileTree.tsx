@@ -57,6 +57,12 @@ export interface VFSEntry {
 interface VirtualFileTreeProps {
   sessionId: string | null;
   onFileSelect?: (path: string) => void;
+  /**
+   * Inline VFS entries delivered via the WebSocket exit frame (vfs_snapshot).
+   * When provided and non-empty, these entries are shown directly without
+   * requiring VFS persistence (LIBSQL_URL) to be configured.
+   */
+  inlineEntries?: VFSEntry[];
 }
 
 // ── Tree node types ────────────────────────────────────────────────────────
@@ -166,12 +172,14 @@ function broadcastChannelName(sessionId: string) {
 type Action =
   | { type: "SET_ENTRIES"; entries: VFSEntry[] }
   | { type: "TOGGLE_DIR"; path: string }
-  | { type: "SET_OFFLINE"; offline: boolean };
+  | { type: "SET_OFFLINE"; offline: boolean }
+  | { type: "SET_VFS_DISABLED" };
 
 interface TreeState {
-  entries:  VFSEntry[];
-  expanded: Set<string>;
-  offline:  boolean;
+  entries:     VFSEntry[];
+  expanded:    Set<string>;
+  offline:     boolean;
+  vfsDisabled: boolean;
 }
 
 function reducer(state: TreeState, action: Action): TreeState {
@@ -186,6 +194,8 @@ function reducer(state: TreeState, action: Action): TreeState {
     }
     case "SET_OFFLINE":
       return { ...state, offline: action.offline };
+    case "SET_VFS_DISABLED":
+      return { ...state, vfsDisabled: true };
   }
 }
 
@@ -350,11 +360,13 @@ function TreeNodes({
 export default function VirtualFileTree({
   sessionId,
   onFileSelect,
+  inlineEntries,
 }: VirtualFileTreeProps) {
   const [state, dispatch] = useReducer(reducer, {
-    entries:  [],
-    expanded: new Set<string>(),
-    offline:  false,
+    entries:     [],
+    expanded:    new Set<string>(),
+    offline:     false,
+    vfsDisabled: false,
   });
   const selectedRef = useRef<string | null>(null);
 
@@ -480,8 +492,10 @@ export default function VirtualFileTree({
       } else if (result.status === 503) {
         // 503 = VFS persistence disabled on the orchestrator (LIBSQL_URL not
         // set).  The orchestrator itself is reachable — don't show the offline
-        // banner.  Poll at a slow fixed interval since the config won't change
-        // without a server restart.
+        // banner.  Mark vfsDisabled so the UI shows an informative empty state
+        // instead of an infinite shimmer.  Poll at a slow fixed interval since
+        // the config won't change without a server restart.
+        dispatch({ type: "SET_VFS_DISABLED" });
         backoffMs = POLL_MAX_MS;
       } else if (result.networkError || (result.status !== undefined && result.status >= 500)) {
         // True server error or network unreachable — back off exponentially.
@@ -506,7 +520,12 @@ export default function VirtualFileTree({
     };
   }, [sessionId, applyRemoteEntries]);
 
-  const tree = useMemo(() => buildTree(state.entries), [state.entries]);
+  // Prefer inline entries (delivered via WebSocket exit frame) when present.
+  // This lets the file tree populate even when VFS persistence is disabled.
+  const displayEntries = (inlineEntries && inlineEntries.length > 0)
+    ? inlineEntries
+    : state.entries;
+  const tree = useMemo(() => buildTree(displayEntries), [displayEntries]);
 
   const handleToggle = useCallback((path: string) => {
     dispatch({ type: "TOGGLE_DIR", path });
@@ -554,6 +573,29 @@ export default function VirtualFileTree({
             </p>
             <p className="text-[10px] text-[var(--color-text-muted)]">
               Retrying automatically…
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    // VFS persistence is disabled (orchestrator started without LIBSQL_URL).
+    // If inline entries were provided via the WS exit frame they would have
+    // been caught by tree.length > 0 above, so here we know there are none.
+    if (state.vfsDisabled) {
+      return (
+        <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
+          <Database className="h-7 w-7 text-[var(--color-text-muted)] opacity-30" />
+          <div className="space-y-1">
+            <p className="font-mono text-[10px] font-medium uppercase tracking-widest text-[var(--color-text-muted)]">
+              No output files
+            </p>
+            <p className="text-[9px] text-[var(--color-text-muted)] leading-relaxed">
+              VFS persistence is disabled.
+              <br />
+              Set <span className="font-mono">LIBSQL_URL</span> to enable it,
+              or run the <span className="font-mono">files</span> demo to see
+              inline snapshots.
             </p>
           </div>
         </div>

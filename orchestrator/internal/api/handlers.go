@@ -410,12 +410,19 @@ func (h *Handler) WSExecute(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Send final exit message.
-	_ = wsjson.Write(ctx, conn, map[string]any{
+	// Send final exit message, including VFS snapshot so the frontend can
+	// populate the file tree even when VFS persistence is disabled (no LIBSQL_URL).
+	// Go's JSON encoder base64-encodes []byte map values automatically, so the
+	// frontend receives { "/workspace/output.txt": "<base64>", ... }.
+	exitMsg := map[string]any{
 		"type":       "exit",
 		"code":       result.ExitCode,
 		"elapsed_ms": result.TotalMS,
-	})
+	}
+	if len(result.VFSSnapshot) > 0 {
+		exitMsg["vfs_snapshot"] = result.VFSSnapshot
+	}
+	_ = wsjson.Write(ctx, conn, exitMsg)
 
 	h.log.Debug("[ws:6/6] exit frame sent — closing connection",
 		zap.String("session_id", req.SessionID),

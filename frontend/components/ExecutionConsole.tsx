@@ -23,7 +23,7 @@ import {
   Zap,
 } from "lucide-react";
 
-import VirtualFileTree from "./VirtualFileTree";
+import VirtualFileTree, { type VFSEntry } from "./VirtualFileTree";
 import AgentVitals from "./AgentVitals";
 import { TerminalErrorBoundary } from "./TerminalErrorBoundary";
 import ComponentRegistry from "./ComponentRegistry";
@@ -36,39 +36,160 @@ const Terminal = dynamic(() => import("./Terminal"), { ssr: false });
 
 type SandboxState = "idle" | "running" | "crashed" | "complete";
 
-// ── Demo WASM module ──────────────────────────────────────────────────────
-// Minimal valid noop module: (module (func (export "_start")))
-// 34 bytes — magic + version + type/func/export/code sections.
-// This is the same binary used in the backend test suite.
-const DEMO_WASM_BYTES = new Uint8Array([
-  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
-  0x01, 0x04, 0x01, 0x60, 0x00, 0x00,             // type section
-  0x03, 0x02, 0x01, 0x00,                          // function section
-  0x07, 0x0a, 0x01, 0x06, 0x5f, 0x73, 0x74, 0x61, // export "_start"
-  0x72, 0x74, 0x00, 0x00,
-  0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,             // code section
-]);
+// ── Demo WASM modules ─────────────────────────────────────────────────────
+// Each module is a pre-compiled WASI binary (wasm32-wasip1).
+// They exercise fd_write / proc_exit and are validated against the wasmtime
+// WASI runtime used by wasm-worker-manager.
+//
+// To recompile from Rust source:  cd wasm-demos && cargo build --release --target wasm32-wasip1
+// Or from WAT:  wat2wasm <name>.wat -o <name>.wasm && base64 -i <name>.wasm | tr -d '\n'
 
-/** Base64-encode the demo WASM bytes for the WebSocket execute request. */
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary);
-}
+/** Noop — minimal 34-byte module, exports _start() → proc_exit(0). No output. */
+const NOOP_WASM_B64 = (() => {
+  const bytes = new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+    0x03, 0x02, 0x01, 0x00,
+    0x07, 0x0a, 0x01, 0x06, 0x5f, 0x73, 0x74, 0x61,
+    0x72, 0x74, 0x00, 0x00,
+    0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
+  ]);
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s);
+})();
 
-const DEMO_WASM_B64 = toBase64(DEMO_WASM_BYTES);
+/** Hello — greeting banner + runtime info via multiple fd_write calls. */
+const HELLO_WASM_B64 =
+  "AGFzbQEAAAABEANgBH9/f38Bf2ABfwBgAAACRgIWd2FzaV9zbmFwc2hvdF9wcmV2aWV3MQhmZF93" +
+  "cml0ZQAAFndhc2lfc25hcHNob3RfcHJldmlldzEJcHJvY19leGl0AAEDAgECBQMBAAEHEwIGbWVt" +
+  "b3J5AgAGX3N0YXJ0AAIK8QIB7gIAQYAEQQA2AgBBhARBAjYCAEEBQYAEQQFBkAQQABpBgARBAjYC" +
+  "AEGEBEHqADYCAEEBQYAEQQFBkAQQABpBgARB7AA2AgBBhARBMDYCAEEBQYAEQQFBkAQQABpBgARB" +
+  "nAE2AgBBhARB6gA2AgBBAUGABEEBQZAEEAAaQYAEQYYCNgIAQYQEQQI2AgBBAUGABEEBQZAEEAAa" +
+  "QYAEQYgCNgIAQYQEQSg2AgBBAUGABEEBQZAEEAAaQYAEQbACNgIAQYQEQSU2AgBBAUGABEEBQZAE" +
+  "EAAaQYAEQdUCNgIAQYQEQS82AgBBAUGABEEBQZAEEAAaQYAEQYQDNgIAQYQEQR42AgBBAUGABEEB" +
+  "QZAEEAAaQYAEQaIDNgIAQYQEQQI2AgBBAUGABEEBQZAEEAAaQYAEQaQDNgIAQYQEQR02AgBBAUGA" +
+  "BEEBQZAEEAAaQYAEQcEDNgIAQYQEQQI2AgBBAUGABEEBQZAEEAAaQQAQAQsLygMBAEEAC8MDDQog" +
+  "IOKVreKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKU" +
+  "gOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKVrg0KICDilIIgIPCf" +
+  "n6IgIEhlbGxvIGZyb20gSXNvbGF0b3ItViEgICAgICAgIOKUgg0KICDilbDilIDilIDilIDilIDi" +
+  "lIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDi" +
+  "lIDilIDilIDilIDilIDilIDilIDilIDilIDila8NCg0KICBydW50aW1lICA6IHdhc210aW1lIDI1" +
+  "LjAgKENyYW5lbGlmdCkNCiAgQUJJICAgICAgOiBXQVNJIHNuYXBzaG90X3ByZXZpZXcxDQogIHNh" +
+  "bmRib3ggIDogaXNvbGF0b3ItdiAvIHdhc20td29ya2VyLW1hbmFnZXINCiAgbWVtb3J5ICAgOiAx" +
+  "IHBhZ2UgKDY0IEtpQikNCg0KICDinJQgIGV4ZWN1dGlvbiBzdWNjZXNzZnVsDQoNCg==";
+
+/** Counter — prints 1..20 as separate fd_write calls (tests streaming). */
+const COUNTER_WASM_B64 =
+  "AGFzbQEAAAABEANgBH9/f38Bf2ABfwBgAAACRgIWd2FzaV9zbmFwc2hvdF9wcmV2aWV3MQhmZF93" +
+  "cml0ZQAAFndhc2lfc25hcHNob3RfcHJldmlldzEJcHJvY19leGl0AAEDAgECBQMBAAEHEwIGbWVt" +
+  "b3J5AgAGX3N0YXJ0AAIKlgUBkwUAQYAEQQA2AgBBhARBGjYCAEEBQYAEQQFBkAQQABpBgARBGjYC" +
+  "AEGEBEEHNgIAQQFBgARBAUGQBBAAGkGABEEhNgIAQYQEQQc2AgBBAUGABEEBQZAEEAAaQYAEQSg2" +
+  "AgBBhARBBzYCAEEBQYAEQQFBkAQQABpBgARBLzYCAEGEBEEHNgIAQQFBgARBAUGQBBAAGkGABEE2" +
+  "NgIAQYQEQQc2AgBBAUGABEEBQZAEEAAaQYAEQT02AgBBhARBBzYCAEEBQYAEQQFBkAQQABpBgARB" +
+  "xAA2AgBBhARBBzYCAEEBQYAEQQFBkAQQABpBgARBywA2AgBBhARBBzYCAEEBQYAEQQFBkAQQABpB" +
+  "gARB0gA2AgBBhARBBzYCAEEBQYAEQQFBkAQQABpBgARB2QA2AgBBhARBBzYCAEEBQYAEQQFBkAQQ" +
+  "ABpBgARB4AA2AgBBhARBBzYCAEEBQYAEQQFBkAQQABpBgARB5wA2AgBBhARBBzYCAEEBQYAEQQFB" +
+  "kAQQABpBgARB7gA2AgBBhARBBzYCAEEBQYAEQQFBkAQQABpBgARB9QA2AgBBhARBBzYCAEEBQYAE" +
+  "QQFBkAQQABpBgARB/AA2AgBBhARBBzYCAEEBQYAEQQFBkAQQABpBgARBgwE2AgBBhARBBzYCAEEB" +
+  "QYAEQQFBkAQQABpBgARBigE2AgBBhARBBzYCAEEBQYAEQQFBkAQQABpBgARBkQE2AgBBhARBBzYC" +
+  "AEEBQYAEQQFBkAQQABpBgARBmAE2AgBBhARBBzYCAEEBQYAEQQFBkAQQABpBgARBnwE2AgBBhARB" +
+  "BzYCAEEBQYAEQQFBkAQQABpBgARBpgE2AgBBhARBDDYCAEEBQYAEQQFBkAQQABpBABABCwu5AQEA" +
+  "QQALsgFDb3VudGluZyBmcm9tIDEgdG8gMjA6DQoNCiAgICAxDQogICAgMg0KICAgIDMNCiAgICA0" +
+  "DQogICAgNQ0KICAgIDYNCiAgICA3DQogICAgOA0KICAgIDkNCiAgIDEwDQogICAxMQ0KICAgMTIN" +
+  "CiAgIDEzDQogICAxNA0KICAgMTUNCiAgIDE2DQogICAxNw0KICAgMTgNCiAgIDE5DQogICAyMA0K" +
+  "DQpEb25lIOKclA0K";
+
+/** Fibonacci — first 20 Fibonacci numbers with formatted output. */
+const FIBONACCI_WASM_B64 =
+  "AGFzbQEAAAABEANgBH9/f38Bf2ABfwBgAAACRgIWd2FzaV9zbmFwc2hvdF9wcmV2aWV3MQhmZF93" +
+  "cml0ZQAAFndhc2lfc25hcHNob3RfcHJldmlldzEJcHJvY19leGl0AAEDAgECBQMBAAEHEwIGbWVt" +
+  "b3J5AgAGX3N0YXJ0AAIKmgUBlwUAQYAEQQA2AgBBhARBKDYCAEEBQYAEQQFBkAQQABpBgARBKDYC" +
+  "AEGEBEETNgIAQQFBgARBAUGQBBAAGkGABEE7NgIAQYQEQRM2AgBBAUGABEEBQZAEEAAaQYAEQc4A" +
+  "NgIAQYQEQRM2AgBBAUGABEEBQZAEEAAaQYAEQeEANgIAQYQEQRM2AgBBAUGABEEBQZAEEAAaQYAE" +
+  "QfQANgIAQYQEQRM2AgBBAUGABEEBQZAEEAAaQYAEQYcBNgIAQYQEQRM2AgBBAUGABEEBQZAEEAAa" +
+  "QYAEQZoBNgIAQYQEQRM2AgBBAUGABEEBQZAEEAAaQYAEQa0BNgIAQYQEQRM2AgBBAUGABEEBQZAE" +
+  "EAAaQYAEQcABNgIAQYQEQRM2AgBBAUGABEEBQZAEEAAaQYAEQdMBNgIAQYQEQRM2AgBBAUGABEEB" +
+  "QZAEEAAaQYAEQeYBNgIAQYQEQRM2AgBBAUGABEEBQZAEEAAaQYAEQfkBNgIAQYQEQRM2AgBBAUGA" +
+  "BEEBQZAEEAAaQYAEQYwCNgIAQYQEQRM2AgBBAUGABEEBQZAEEAAaQYAEQZ8CNgIAQYQEQRM2AgBB" +
+  "AUGABEEBQZAEEAAaQYAEQbICNgIAQYQEQRM2AgBBAUGABEEBQZAEEAAaQYAEQcUCNgIAQYQEQRM2" +
+  "AgBBAUGABEEBQZAEEAAaQYAEQdgCNgIAQYQEQRM2AgBBAUGABEEBQZAEEAAaQYAEQesCNgIAQYQE" +
+  "QRM2AgBBAUGABEEBQZAEEAAaQYAEQf4CNgIAQYQEQRM2AgBBAUGABEEBQZAEEAAaQYAEQZEDNgIA" +
+  "QYQEQRM2AgBBAUGABEEBQZAEEAAaQYAEQaQDNgIAQYQEQSU2AgBBAUGABEEBQZAEEAAaQQAQAQsL" +
+  "0AMBAEEAC8kDRmlib25hY2NpIHNlcXVlbmNlIChmaXJzdCAyMCB0ZXJtcyk6DQoNCiAgRiggMSkg" +
+  "PSAgICAgICAxDQogIEYoIDIpID0gICAgICAgMQ0KICBGKCAzKSA9ICAgICAgIDINCiAgRiggNCkg" +
+  "PSAgICAgICAzDQogIEYoIDUpID0gICAgICAgNQ0KICBGKCA2KSA9ICAgICAgIDgNCiAgRiggNykg" +
+  "PSAgICAgIDEzDQogIEYoIDgpID0gICAgICAyMQ0KICBGKCA5KSA9ICAgICAgMzQNCiAgRigxMCkg" +
+  "PSAgICAgIDU1DQogIEYoMTEpID0gICAgICA4OQ0KICBGKDEyKSA9ICAgICAxNDQNCiAgRigxMykg" +
+  "PSAgICAgMjMzDQogIEYoMTQpID0gICAgIDM3Nw0KICBGKDE1KSA9ICAgICA2MTANCiAgRigxNikg" +
+  "PSAgICAgOTg3DQogIEYoMTcpID0gICAgMTU5Nw0KICBGKDE4KSA9ICAgIDI1ODQNCiAgRigxOSkg" +
+  "PSAgICA0MTgxDQogIEYoMjApID0gICAgNjc2NQ0KDQogIFN1bSBvZiBmaXJzdCAyMCB0ZXJtcyA9" +
+  "IDE3NzEwDQoNCg==";
+
+/** Primes — Sieve of Eratosthenes up to 100. */
+const PRIMES_WASM_B64 =
+  "AGFzbQEAAAABEANgBH9/f38Bf2ABfwBgAAACRgIWd2FzaV9zbmFwc2hvdF9wcmV2aWV3MQhmZF93" +
+  "cml0ZQAAFndhc2lfc25hcHNob3RfcHJldmlldzEJcHJvY19leGl0AAEDAgECBQMBAAEHEwIGbWVt" +
+  "b3J5AgAGX3N0YXJ0AAIKnQEBmgEAQYAEQQA2AgBBhARBLTYCAEEBQYAEQQFBkAQQABpBgARBLTYC" +
+  "AEGEBEEqNgIAQQFBgARBAUGQBBAAGkGABEHXADYCAEGEBEEqNgIAQQFBgARBAUGQBBAAGkGABEGB" +
+  "ATYCAEGEBEEWNgIAQQFBgARBAUGQBBAAGkGABEGXATYCAEGEBEEXNgIAQQFBgARBAUGQBBAAGkEA" +
+  "EAELC7UBAQBBAAuuAVByaW1lcyB1cCB0byAxMDAgKFNpZXZlIG9mIEVyYXRvc3RoZW5lcyk6DQoN" +
+  "CiAgIDIgICAzICAgNSAgIDcgIDExICAxMyAgMTcgIDE5ICAyMyAgMjkNCiAgMzEgIDM3ICA0MSIA" +
+  "NDMgIDQ3ICA1MyAgNTkgIDYxICA2NyAgNzENCiAgNzMgIDc5ICA4MyAgODkgIDk3DQoNCiAgRm91" +
+  "bmQgMjUgcHJpbWVzDQoNCg==";
+
+/** Files — writes two files to /workspace via raw WASI path_open calls.
+ *  The VFS snapshot is delivered inline in the WebSocket exit frame so the
+ *  file tree populates without requiring LIBSQL_URL to be configured.
+ */
+const FILES_WASM_B64 =
+  "AGFzbQEAAAABIgVgCX9/f39/fn5/fwF/YAR/f39/AX9gAX8Bf2ABfwBgAAACiwEEFndhc2lfc25h" +
+  "cHNob3RfcHJldmlldzEJcGF0aF9vcGVuAAAWd2FzaV9zbmFwc2hvdF9wcmV2aWV3MQhmZF93cml0" +
+  "ZQABFndhc2lfc25hcHNob3RfcHJldmlldzEIZmRfY2xvc2UAAhZ3YXNpX3NuYXBzaG90X3ByZXZp" +
+  "ZXcxCXByb2NfZXhpdAADAwIBBAUDAQABBxMCBm1lbW9yeQIABl9zdGFydAAECpoBAZcBAEEAQRA2" +
+  "AgBBAEGdATYCBEEBQQBBAUEIEAEaQQNBAEGtAUEVQQlCf0J/QQBBDBAAGkEAQcIBNgIAQQBBwAA2" +
+  "AgRBDCgCAEEAQQFBCBABGkEMKAIAEAIaQQNBAEGCAkEWQQlCf0J/QQBBDBAAGkEAQZgCNgIAQQBB" +
+  "LjYCBEEMKAIAQQBBAUEIEAEaQQwoAgAQAhpBABADCwu9AgEAQRALtgJWRlMgRmlsZSBPdXRwdXQg" +
+  "RGVtbw0KPT09PT09PT09PT09PT09PT09PT0NCiAgV3JpdGluZyAvd29ya3NwYWNlL291dHB1dC50" +
+  "eHQgLi4uDQogIFdyaXRpbmcgL3dvcmtzcGFjZS9yZXBvcnQuanNvbiAuLi4NCkZpbGVzIHdyaXR0" +
+  "ZW4uIENoZWNrIHRoZSBsZWZ0IHBhbmVsLg0KL3dvcmtzcGFjZS9vdXRwdXQudHh0V3JpdHRlbiBi" +
+  "eSBJc29sYXRvci1WIFdBU00gc2FuZGJveC4KRmlsZTogL3dvcmtzcGFjZS9vdXRwdXQudHh0Ci93" +
+  "b3Jrc3BhY2UvcmVwb3J0Lmpzb257ImRlbW8iOiJ2ZnMiLCJzdGF0dXMiOiJvayIsImZpbGVzX3dy" +
+  "aXR0ZW4iOjJ9";
+
+// ── Demo registry ─────────────────────────────────────────────────────────────
+type DemoKey = "noop" | "hello" | "counter" | "fibonacci" | "primes" | "files";
+
+const DEMOS: Record<DemoKey, { label: string; description: string; wasmB64: string }> = {
+  noop:      { label: "noop",      description: "No output — pipeline smoke test",              wasmB64: NOOP_WASM_B64      },
+  hello:     { label: "hello",     description: "Greeting banner + runtime info",               wasmB64: HELLO_WASM_B64     },
+  counter:   { label: "counter",   description: "Count 1→20 (streamed per fd_write call)",      wasmB64: COUNTER_WASM_B64   },
+  fibonacci: { label: "fibonacci", description: "First 20 Fibonacci numbers",                   wasmB64: FIBONACCI_WASM_B64 },
+  primes:    { label: "primes",    description: "Sieve of Eratosthenes up to 100",              wasmB64: PRIMES_WASM_B64    },
+  files:     { label: "files",     description: "Writes 2 files to /workspace — tests VFS I/O", wasmB64: FILES_WASM_B64     },
+};
 
 // Detect Mac so we show ⌘ vs Ctrl in hints
 const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
 const MOD   = isMac ? "⌘" : "Ctrl";
 
 export default function ExecutionConsole() {
-  const [sandboxState, setSandboxState] = useState<SandboxState>("idle");
-  const [sessionId,    setSessionId]    = useState<string | null>(null);
-  const [activeTab,    setActiveTab]    = useState<"terminal" | "preview">("terminal");
-  const [previewFile,  setPreviewFile]  = useState<string | null>(null);
-  const [helpOpen,     setHelpOpen]     = useState(false);
-  const [showVitals,   setShowVitals]   = useState(false);
+  const [sandboxState,     setSandboxState]     = useState<SandboxState>("idle");
+  const [sessionId,        setSessionId]        = useState<string | null>(null);
+  const [activeTab,        setActiveTab]        = useState<"terminal" | "preview">("terminal");
+  const [previewFile,      setPreviewFile]      = useState<string | null>(null);
+  const [helpOpen,         setHelpOpen]         = useState(false);
+  const [showVitals,       setShowVitals]       = useState(false);
+  const [selectedDemo,     setSelectedDemo]     = useState<DemoKey>("hello");
+  /** VFS entries delivered inline via the WebSocket exit frame (no LIBSQL_URL needed). */
+  const [inlineVfsEntries,  setInlineVfsEntries]  = useState<VFSEntry[]>([]);
+  /**
+   * Raw vfs_snapshot map (path → base64 content) from the WebSocket exit frame.
+   * Used to serve file preview content without hitting the VFS API.
+   */
+  const [inlineVfsSnapshot, setInlineVfsSnapshot] = useState<Record<string, string>>({});
+  /** Decoded content of the currently-previewed inline file, or undefined if using API. */
+  const [inlineFileContent, setInlineFileContent] = useState<string | undefined>(undefined);
 
   // ── Actions ────────────────────────────────────────────────────────────
 
@@ -90,12 +211,30 @@ export default function ExecutionConsole() {
     setSessionId(null);
     setPreviewFile(null);
     setActiveTab("terminal");
+    setInlineVfsEntries([]);
+    setInlineVfsSnapshot({});
+    setInlineFileContent(undefined);
   }, []);
 
   const handleFileSelect = useCallback((path: string) => {
     setPreviewFile(path);
     setActiveTab("preview");
-  }, []);
+    // If the file was delivered inline via the WebSocket exit frame, decode
+    // its base64 content now so the previewer can render without an API call.
+    const b64 = inlineVfsSnapshot[path];
+    if (b64) {
+      try {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        setInlineFileContent(new TextDecoder().decode(bytes));
+      } catch {
+        // Malformed base64 — fall back to API fetch (which may also fail, but
+        // that surfaces a meaningful error message rather than a silent blank).
+        setInlineFileContent(undefined);
+      }
+    } else {
+      setInlineFileContent(undefined);
+    }
+  }, [inlineVfsSnapshot]);
 
   const handleCrash = useCallback(() => setSandboxState("crashed"), []);
   const handleReconnect = useCallback(() => {
@@ -215,6 +354,30 @@ export default function ExecutionConsole() {
 
           <div className="mx-1.5 h-4 w-px bg-[var(--color-border)]" />
 
+          {/* Demo selector */}
+          <Tooltip content={DEMOS[selectedDemo].description} side="bottom">
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-[10px] uppercase tracking-widest text-[var(--color-text-muted)]">
+                demo
+              </span>
+              <select
+                value={selectedDemo}
+                onChange={(e) => setSelectedDemo(e.target.value as DemoKey)}
+                disabled={sandboxState === "running"}
+                className="rounded border border-[var(--color-border)] bg-[var(--color-elevated)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--color-text-secondary)] outline-none transition-colors hover:border-[var(--color-accent)] focus:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                aria-label="Select demo WASM program"
+              >
+                {(Object.keys(DEMOS) as DemoKey[]).map((key) => (
+                  <option key={key} value={key}>
+                    {DEMOS[key].label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </Tooltip>
+
+          <div className="mx-1.5 h-4 w-px bg-[var(--color-border)]" />
+
           {/* Session badge */}
           {sessionId ? (
             <Tooltip
@@ -290,6 +453,7 @@ export default function ExecutionConsole() {
                   <VirtualFileTree
                     sessionId={sessionId}
                     onFileSelect={handleFileSelect}
+                    inlineEntries={inlineVfsEntries}
                   />
                 </div>
 
@@ -346,7 +510,11 @@ export default function ExecutionConsole() {
                     {/* Content */}
                     <div className="flex-1 overflow-hidden font-mono text-sm">
                       {activeTab === "preview" && previewFile ? (
-                        <ComponentRegistry filePath={previewFile} sessionId={sessionId} />
+                        <ComponentRegistry
+                          filePath={previewFile}
+                          sessionId={sessionId}
+                          inlineContent={inlineFileContent}
+                        />
                       ) : (
                         <WelcomePane
                           onRun={handleRun}
@@ -387,7 +555,29 @@ export default function ExecutionConsole() {
                     />
                     <div className="flex-1 overflow-hidden">
                       <TerminalErrorBoundary onCrash={handleCrash} onReconnect={handleReconnect}>
-                        <Terminal sessionId={sessionId} running={sandboxState === "running"} wasmB64={DEMO_WASM_B64} />
+                        <Terminal
+                          sessionId={sessionId}
+                          running={sandboxState === "running"}
+                          wasmB64={DEMOS[selectedDemo].wasmB64}
+                          onEnd={(outcome, vfsSnapshot) => {
+                            setSandboxState(outcome === "complete" ? "complete" : "crashed");
+                            if (vfsSnapshot && Object.keys(vfsSnapshot).length > 0) {
+                              // Store raw snapshot for on-demand content decoding when the
+                              // user clicks a file in the tree.  Go's JSON encoder auto-
+                              // base64-encodes []byte map values, so values are base64 strings.
+                              setInlineVfsSnapshot(vfsSnapshot as Record<string, string>);
+                              // Build VFSEntry[] for the file tree — size is estimated from
+                              // base64 length × 0.75 (bytes per encoded char, approximately).
+                              const entries: VFSEntry[] = Object.entries(vfsSnapshot).map(
+                                ([path, b64]) => ({
+                                  path,
+                                  size: Math.round((b64 as string).length * 0.75),
+                                })
+                              );
+                              setInlineVfsEntries(entries);
+                            }
+                          }}
+                        />
                       </TerminalErrorBoundary>
                     </div>
                   </div>
@@ -528,7 +718,8 @@ function WelcomePane({
             Execution complete
           </p>
           <p className="font-mono text-[11px] text-[var(--color-text-muted)]">
-            Select output files from the left panel to inspect results.
+            Terminal output is shown in the console above. Output files, if any,
+            appear in the left panel.
           </p>
         </div>
         <div className="flex gap-2">

@@ -23,6 +23,16 @@ interface TerminalProps {
   running: boolean;
   /** Base64-encoded WASM binary to execute.  Sent as the first WebSocket frame. */
   wasmB64?: string;
+  /**
+   * Called when the WebSocket session ends for any reason.
+   * "complete"    → clean exit (WS close code 1000).
+   * "error"       → server-side failure (e.g. code 1011 "execution failed").
+   * vfsSnapshot   → map of VFS file path → base64-encoded content, present
+   *                 when the WASM program wrote files during execution.
+   *                 Lets the parent populate the file tree without needing
+   *                 VFS persistence (LIBSQL_URL) to be configured.
+   */
+  onEnd?: (outcome: "complete" | "error", vfsSnapshot?: Record<string, string>) => void;
 }
 
 // The maximum number of bytes we'll batch into a single write call.
@@ -32,7 +42,7 @@ const MAX_BYTES_PER_FRAME = 32_768; // 32 KB
 
 // ── Component ──────────────────────────────────────────────────────────────
 
-export default function Terminal({ sessionId, running, wasmB64 }: TerminalProps) {
+export default function Terminal({ sessionId, running, wasmB64, onEnd }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Xterm / addon refs — we hold them in refs so the cleanup effect can
@@ -47,6 +57,10 @@ export default function Terminal({ sessionId, running, wasmB64 }: TerminalProps)
 
   // WebSocket
   const wsRef = useRef<WebSocket | null>(null);
+
+  // VFS snapshot received in the exit frame — held until onclose fires so
+  // we can pass it to onEnd in one call.
+  const vfsSnapshotRef = useRef<Record<string, string> | undefined>(undefined);
 
   // ── Init xterm (once, on mount) ───────────────────────────────────────
 
@@ -253,6 +267,33 @@ export default function Terminal({ sessionId, running, wasmB64 }: TerminalProps)
         try {
           const msg = JSON.parse(ev.data) as { type: string; code?: number };
           if (msg.type === "exit") {
+            // Flush any buffered stdout synchronously NOW, before writing the
+            // exit footer line.  The rAF-based back-pressure buffer races with
+            // React's effect cleanup: onEnd → setSandboxState → re-render →
+            // cleanup runs and cancels the pending rAF, discarding the buffer.
+            // Flushing here guarantees stdout appears in order, before the
+            // footer, and leaves nothing for the cleanup to lose.
+            if (rafRef.current !== null) {
+              cancelAnimationFrame(rafRef.current);
+              rafRef.current = null;
+            }
+            const term = xtermRef.current;
+            if (term) {
+              for (const chunk of bufferRef.current) {
+                term.write(chunk);
+              }
+            }
+            bufferRef.current = [];
+            pendingBytesRef.current = 0;
+
+            // Capture VFS snapshot for the parent.  Go's JSON encoder
+            // base64-encodes []byte map values, so the values are already
+            // base64 strings — no decoding needed here.
+            const snap = (msg as Record<string, unknown>).vfs_snapshot;
+            if (snap && typeof snap === "object") {
+              vfsSnapshotRef.current = snap as Record<string, string>;
+            }
+
             console.log("[Terminal] exit frame received, code:", msg.code);
             xtermRef.current?.writeln(
               `\r\n\x1b[38;5;240m└─ process exited with code \x1b[${
@@ -276,10 +317,26 @@ export default function Terminal({ sessionId, running, wasmB64 }: TerminalProps)
 
     ws.onclose = (ev) => {
       console.log("[Terminal] WebSocket onclose:", { code: ev.code, reason: ev.reason, wasClean: ev.wasClean });
-      if (ev.wasClean) return;
-      xtermRef.current?.writeln(
-        `\r\n\x1b[38;5;240m[terminal] disconnected (code ${ev.code})\x1b[0m\r\n`
-      );
+
+      // NOTE: wasClean only means the TCP handshake closed gracefully — it does
+      // NOT mean execution succeeded.  Code 1011 ("execution failed") arrives
+      // with wasClean=true because the server sent a proper close frame.
+      // We always write a status line and notify the parent.
+
+      if (ev.code !== 1000) {
+        // Non-clean exit — show the reason so the user knows what happened.
+        const reason = ev.reason ? ` — ${ev.reason}` : "";
+        xtermRef.current?.writeln(
+          `\r\n\x1b[31m[terminal] session ended with error (code ${ev.code}${reason})\x1b[0m\r\n`
+        );
+        onEnd?.("error");
+      } else {
+        // Normal close — the exit frame was already written by onmessage.
+        // Pass the VFS snapshot (captured in the exit frame handler) to the
+        // parent so it can populate the file tree without the VFS HTTP API.
+        onEnd?.("complete", vfsSnapshotRef.current);
+        vfsSnapshotRef.current = undefined; // reset for next session
+      }
     };
 
     // Forward keyboard input back to the sandbox stdin
@@ -294,10 +351,17 @@ export default function Terminal({ sessionId, running, wasmB64 }: TerminalProps)
       inputDisposer?.dispose();
       ws.close(1000, "session ended");
       wsRef.current = null;
-      // Cancel any pending rAF flush
+      // Flush any remaining buffered output that wasn't already drained by the
+      // exit-frame handler (e.g. sessions that end without a clean exit frame).
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
+      }
+      const flushTerm = xtermRef.current;
+      if (flushTerm) {
+        for (const chunk of bufferRef.current) {
+          flushTerm.write(chunk);
+        }
       }
       bufferRef.current = [];
       pendingBytesRef.current = 0;

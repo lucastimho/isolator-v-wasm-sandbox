@@ -58,13 +58,21 @@ type rustExecuteReq struct {
 }
 
 // rustExecuteResp matches the Rust worker's 200 response.
+//
+// NOTE on field types:
+//   - Stdout/Stderr: Rust serialises these as plain UTF-8 JSON strings (via
+//     String::from_utf8_lossy).  Go's json.Decoder would base64-decode a
+//     []byte field, so we use string here and convert to []byte manually.
+//   - VFSSnapshot: Rust serialises the map values as base64 strings (via
+//     BASE64_ENGINE.encode) under the key "vfs_files".  []byte fields are
+//     auto-base64-decoded by Go's json.Decoder, which is exactly what we want.
 type rustExecuteResp struct {
 	SandboxID   string            `json:"sandbox_id"`
-	Stdout      []byte            `json:"stdout"`
-	Stderr      []byte            `json:"stderr"`
+	Stdout      string            `json:"stdout"`    // plain UTF-8 string from Rust
+	Stderr      string            `json:"stderr"`    // plain UTF-8 string from Rust
 	ExitCode    int32             `json:"exit_code"`
 	ElapsedMS   uint64            `json:"elapsed_ms"`
-	VFSSnapshot map[string][]byte `json:"vfs_snapshot"`
+	VFSSnapshot map[string][]byte `json:"vfs_files"` // Rust field name is "vfs_files"; values are base64
 	// Error fields (4xx/5xx)
 	Error string `json:"error"`
 	Code  string `json:"code"`
@@ -133,12 +141,12 @@ func (c *HTTPWorkerClient) Execute(ctx context.Context, req *ExecuteRequest) (*E
 
 	return &ExecuteResponse{
 		SandboxID:   result.SandboxID,
-		SessionID:   req.SessionID, // carry through for VFS persistence
-		Stdout:      result.Stdout,
-		Stderr:      result.Stderr,
+		SessionID:   req.SessionID,        // carry through for VFS persistence
+		Stdout:      []byte(result.Stdout), // convert UTF-8 string → raw bytes for WS streaming
+		Stderr:      []byte(result.Stderr),
 		ExitCode:    result.ExitCode,
 		ElapsedMS:   result.ElapsedMS,
-		VFSSnapshot: result.VFSSnapshot,
+		VFSSnapshot: result.VFSSnapshot,   // map[string][]byte, auto-decoded from base64 by json.Decoder
 	}, nil
 }
 
