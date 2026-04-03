@@ -73,14 +73,14 @@ sysinfo = "0.30"
 # ── Regex (PII scrubber pattern matching) ────────────────────────────────────────
 regex = "1.10"
 
-# ── Seccomp host guard (Linux-only syscall filtering) ────────────────────────────
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
-
 # ── Utilities ────────────────────────────────────────────────────────────────────
 uuid  = { version = "1.8", features = ["v4"] }
 bytes = "1.6"
 rand  = "0.8"
+
+# ── Seccomp host guard (Linux-only syscall filtering) ────────────────────────────
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 # ─── Dev / test dependencies ───────────────────────────────────────────────────
 [dev-dependencies]

@@ -92,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
         cpu_quota_ticks:    5,                // 5 ticks × 10ms = 50ms CPU budget
     };
 
+    let pool_size = config.pool_size;
     let pool = SandboxPool::new(config, None).await?;
 
     info!(warm_slots = pool.warm_count(), "Pool initialised — starting HTTP server");
@@ -107,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ── Back-pressure controller ─────────────────────────────────────────────
-    let bp_guard = Arc::new(backpressure::BackPressureGuard::new(config.pool_size));
+    let bp_guard = Arc::new(backpressure::BackPressureGuard::new(pool_size));
     info!("Back-pressure guard initialised (CPU threshold: 80%, pool threshold: 90%)");
 
     // ── Self-test: VFS round-trip ─────────────────────────────────────────────

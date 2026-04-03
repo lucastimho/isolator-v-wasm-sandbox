@@ -26,11 +26,10 @@
 //! basis for authority.
 
 use std::collections::HashSet;
-use std::net::IpAddr;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::error::{Result, SandboxError};
 
@@ -311,11 +310,22 @@ impl Default for SessionPolicy {
 /// One `CapabilityValidator` is created per sandbox session.  It is stored in
 /// the `SandboxData` (Wasmtime `Store` data) and consulted by every intercepted
 /// WASI host function **before** the real implementation executes.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CapabilityValidator {
     policy: Arc<SessionPolicy>,
     /// Monotonic counter of denied calls (for alerting / metrics).
     denied_count: std::sync::atomic::AtomicU64,
+}
+
+impl Clone for CapabilityValidator {
+    fn clone(&self) -> Self {
+        Self {
+            policy: Arc::clone(&self.policy),
+            denied_count: std::sync::atomic::AtomicU64::new(
+                self.denied_count.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        }
+    }
 }
 
 impl CapabilityValidator {

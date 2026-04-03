@@ -38,13 +38,12 @@
 //!   - "Fork bomb" style request floods from exhausting memory.
 //!   - Cascading failures when a downstream service is slow.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use sysinfo::System;
-use tracing::{info, warn};
+use tracing::warn;
 
 // ─── Thresholds ─────────────────────────────────────────────────────────────
 
@@ -157,8 +156,8 @@ impl BackPressureGuard {
     /// `pool_capacity` is the total number of sandbox slots (e.g. 50).
     pub fn new(pool_capacity: usize) -> Self {
         let mut sys = System::new();
-        sys.refresh_cpu_all();
-        sys.refresh_memory();
+        sys.refresh_all();
+        std::thread::sleep(Duration::from_millis(200));
 
         let snapshot = LoadSnapshot {
             cpu_percent:      0.0,
@@ -240,10 +239,11 @@ impl BackPressureGuard {
 
     fn do_refresh(&self, current_warm_slots: usize) -> LoadSnapshot {
         let mut sys = self.system.lock();
-        sys.refresh_cpu_all();
-        sys.refresh_memory();
+        sys.refresh_all();
+        std::thread::sleep(Duration::from_millis(200));
+        sys.refresh_all();
 
-        let cpu = sys.global_cpu_usage();
+        let cpu = sys.global_cpu_info().cpu_usage();
 
         let total_mem = sys.total_memory();
         let used_mem = sys.used_memory();

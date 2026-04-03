@@ -44,7 +44,6 @@
 //! | Private keys    | `-----BEGIN.*PRIVATE KEY-----`            |
 //! | Connection URIs | `(postgres|mysql|redis)://…`              |
 
-use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use tracing::{info, warn};
@@ -136,7 +135,7 @@ fn build_rules() -> Vec<ScrubRule> {
         // ── Connection Strings / URIs ───────────────────────────────────
         rule(
             "connection_uri",
-            r"(?:postgres(?:ql)?|mysql|redis|mongodb(?:\+srv)?|amqp|mssql)://[^\s'\"]+",
+            r#"(?:postgres(?:ql)?|mysql|redis|mongodb(?:\+srv)?|amqp|mssql)://[^\s'""]+"#,
         ),
 
         // ── PII: Email Addresses ────────────────────────────────────────

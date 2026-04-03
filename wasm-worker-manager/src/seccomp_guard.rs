@@ -41,7 +41,7 @@
 //! This module is Linux-only.  On non-Linux platforms, `apply()` is a no-op
 //! that logs a warning.
 
-use tracing::{info, warn, error};
+use tracing::{info, warn};
 
 // ─── Seccomp Profile Definition ─────────────────────────────────────────────
 
@@ -264,10 +264,10 @@ impl SeccompProfile {
 ///
 /// Returns `Err` if the seccomp filter could not be installed (e.g. kernel
 /// does not support seccomp, or the process is already filtered).
-pub fn apply(profile: &SeccompProfile) -> anyhow::Result<()> {
+pub fn apply(_profile: &SeccompProfile) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
-        apply_linux(profile)?;
+        apply_linux(_profile)?;
     }
 
     #[cfg(not(target_os = "linux"))]
