@@ -12,9 +12,9 @@
  * "Recognition over recall" (Nielsen #6) — shortcuts are always visible.
  */
 
-import { Circle, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Circle, Loader2, AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
 
-type SandboxState = "idle" | "running" | "crashed" | "complete";
+type SandboxState = "idle" | "running" | "crashed" | "complete" | "nonzero";
 
 interface StatusBarProps {
   sandboxState: SandboxState;
@@ -64,6 +64,15 @@ const STATE_CONFIG: Record<
     icon: <CheckCircle2 className="h-3 w-3 text-[var(--color-ok)]" />,
     label: "Complete",
     tip: "Execution finished. Click files in the tree to inspect outputs.",
+    shortcuts: [
+      { keys: "⌘⇧R", desc: "Reset" },
+      { keys: "⌘↵",  desc: "Run again" },
+    ],
+  },
+  nonzero: {
+    icon: <XCircle className="h-3 w-3 text-[var(--color-danger)]" />,
+    label: "Non-zero exit",
+    tip: "Process exited with a non-zero code. Check the terminal for error output.",
     shortcuts: [
       { keys: "⌘⇧R", desc: "Reset" },
       { keys: "⌘↵",  desc: "Run again" },

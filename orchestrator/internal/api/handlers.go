@@ -422,6 +422,9 @@ func (h *Handler) WSExecute(w http.ResponseWriter, r *http.Request) {
 	if len(result.VFSSnapshot) > 0 {
 		exitMsg["vfs_snapshot"] = result.VFSSnapshot
 	}
+	if result.TrapMessage != nil {
+		exitMsg["trap"] = *result.TrapMessage
+	}
 	_ = wsjson.Write(ctx, conn, exitMsg)
 
 	h.log.Debug("[ws:6/6] exit frame sent — closing connection",

@@ -73,6 +73,8 @@ type rustExecuteResp struct {
 	ExitCode    int32             `json:"exit_code"`
 	ElapsedMS   uint64            `json:"elapsed_ms"`
 	VFSSnapshot map[string][]byte `json:"vfs_files"` // Rust field name is "vfs_files"; values are base64
+	// Non-nil when the guest trapped (e.g. unreachable, OOB memory access).
+	Trap *string `json:"trap,omitempty"`
 	// Error fields (4xx/5xx)
 	Error string `json:"error"`
 	Code  string `json:"code"`
@@ -147,6 +149,7 @@ func (c *HTTPWorkerClient) Execute(ctx context.Context, req *ExecuteRequest) (*E
 		ExitCode:    result.ExitCode,
 		ElapsedMS:   result.ElapsedMS,
 		VFSSnapshot: result.VFSSnapshot,   // map[string][]byte, auto-decoded from base64 by json.Decoder
+		TrapMessage: result.Trap,
 	}, nil
 }
 

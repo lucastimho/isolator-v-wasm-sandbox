@@ -17,6 +17,7 @@ import {
   ChevronRight,
   HelpCircle,
   CheckCircle2,
+  XCircle,
   ArrowRight,
   Cpu,
   MemoryStick,
@@ -34,7 +35,7 @@ import StatusBar from "./StatusBar";
 // Xterm.js uses browser APIs — always load client-side only
 const Terminal = dynamic(() => import("./Terminal"), { ssr: false });
 
-type SandboxState = "idle" | "running" | "crashed" | "complete";
+type SandboxState = "idle" | "running" | "crashed" | "complete" | "nonzero";
 
 // ── Demo WASM modules ─────────────────────────────────────────────────────
 // Each module is a pre-compiled WASI binary (wasm32-wasip1).
@@ -138,6 +139,313 @@ const PRIMES_WASM_B64 =
   "NDMgIDQ3ICA1MyAgNTkgIDYxICA2NyAgNzENCiAgNzMgIDc5ICA4MyAgODkgIDk3DQoNCiAgRm91" +
   "bmQgMjUgcHJpbWVzDQoNCg==";
 
+/** exit1 — prints a message then calls proc_exit(1). Exit code shows red in terminal. */
+const EXIT1_WASM_B64 =
+  "AGFzbQEAAAABEANgBH9/f38Bf2ABfwBgAAACRgIWd2FzaV9zbmFwc2hvdF9wcmV2aWV3" +
+  "MQhmZF93cml0ZQAAFndhc2lfc25hcHNob3RfcHJldmlldzEJcHJvY19leGl0AAEDAgEC" +
+  "BQMBAAEHEwIGbWVtb3J5AgAGX3N0YXJ0AAIKIgEgAEEAQRA2AgBBBEGqATYCAEEBQQBB" +
+  "AUEIEAAaQQEQAQsLsQEBAEEQC6oBRXhpdCBDb2RlIERlbW8KPT09PT09PT09PT09PT0K" +
+  "VGhpcyBwcm9ncmFtIGNhbGxzIHByb2NfZXhpdCgxKSB0byB0ZXN0CnRoZSBub24temVy" +
+  "byBleGl0IHBhdGggb2YgdGhlIHBpcGVsaW5lLgoKVGhlIGV4aXQgY29kZSBiZWxvdyBz" +
+  "aG91bGQgYmUgcmVkLgoKRXhpdGluZyB3aXRoIGNvZGUgMS4uLgo=";
+
+/** trap — prints then executes WASM unreachable, triggering a hardware trap. */
+const TRAP_WASM_B64 =
+  "AGFzbQEAAAABEANgBH9/f38Bf2ABfwBgAAACRgIWd2FzaV9zbmFwc2hvdF9wcmV2aWV3" +
+  "MQhmZF93cml0ZQAAFndhc2lfc25hcHNob3RfcHJldmlldzEJcHJvY19leGl0AAEDAgEC" +
+  "BQMBAAEHEwIGbWVtb3J5AgAGX3N0YXJ0AAIKHwEdAEEAQRA2AgBBBEGvATYCAEEBQQBB" +
+  "AUEIEAAaAAsLtgEBAEEQC68BVHJhcCBEZW1vCj09PT09PT09PQpUaGlzIHByb2dyYW0g" +
+  "ZXhlY3V0ZXMgdGhlIFdBU00gJ3VucmVhY2hhYmxlJwppbnN0cnVjdGlvbiB0byB0cmln" +
+  "Z2VyIGEgaGFyZHdhcmUgdHJhcC4KClRoZSBzYW5kYm94IHNob3VsZCByZXBvcnQgYSBj" +
+  "cmFzaGVkIHN0YXRlLgoKRXhlY3V0aW5nIHVucmVhY2hhYmxlLi4uCg==";
+
+/** unicode — emoji, CJK, box-drawing, Cyrillic, Arabic in a single fd_write. */
+const UNICODE_WASM_B64 =
+  "AGFzbQEAAAABEANgBH9/f38Bf2ABfwBgAAACRgIWd2FzaV9zbmFwc2hvdF9wcmV2aWV3" +
+  "MQhmZF93cml0ZQAAFndhc2lfc25hcHNob3RfcHJldmlldzEJcHJvY19leGl0AAEDAgEC" +
+  "BQMBAAEHEwIGbWVtb3J5AgAGX3N0YXJ0AAIKIgEgAEEAQRA2AgBBBEHeAzYCAEEBQQBB" +
+  "AUEIEAAaQQAQAQsL5QMBAEEQC94DVW5pY29kZSAmIEVtb2ppIFJlbmRlcmluZyBUZXN0" +
+  "Cj09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQoKICBFbW9qaTogICAg8J+agCDi" +
+  "nIUg4p2MIOKaoO+4jyAg8J+SoSDwn5SlIPCfjq8g8J+nqgogIE1hdGg6ICAgICDOsSDO" +
+  "siDOsyDOtCDOtSDOtiDOtyDOuCDOuSDOuiDOuyDOvAogIEFycm93czogICDihpAg4oaS" +
+  "IOKGkSDihpMg4oaUIOKHkiDin7kg4pyTIOKclwogIEJveDogICAgICDilIzilIDilIDi" +
+  "lIDilIDilIDilIDilIDilIDilIDilJAKICAgICAgICAgICAg4pSCIHNhbmRib3gg4pSC" +
+  "CiAgICAgICAgICAgIOKUlOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUmAogIEph" +
+  "cGFuZXNlOiDjgZPjgpPjgavjgaHjga/kuJbnlYwKICBSdXNzaWFuOiAg0J/RgNC40LLQ" +
+  "tdGCLCDQvNC40YAhCiAgQXJhYmljOiAgINmF2LHYrdio2Kcg2KjYp9mE2LnYp9mE2YUK" +
+  "CkFsbCBjaGFyYWN0ZXJzIHJlbmRlcmVkIGNvcnJlY3RseT8g4pyTCg==";
+
+/** longlines — ~90-char lines to test terminal wrap / horizontal scroll. */
+const LONGLINES_WASM_B64 =
+  "AGFzbQEAAAABEANgBH9/f38Bf2ABfwBgAAACRgIWd2FzaV9zbmFwc2hvdF9wcmV2aWV3" +
+  "MQhmZF93cml0ZQAAFndhc2lfc25hcHNob3RfcHJldmlldzEJcHJvY19leGl0AAEDAgEC" +
+  "BQMBAAEHEwIGbWVtb3J5AgAGX3N0YXJ0AAIKIgEgAEEAQRA2AgBBBEH7BzYCAEEBQQBB" +
+  "AUEIEAAaQQAQAQsLgggBAEEQC/sHTG9uZyBMaW5lcyBUZXN0Cj09PT09PT09PT09PT09" +
+  "PQpMaW5lcyBiZWxvdyBhcmUgfjkwIGNoYXJzLiBUZXN0cyB0ZXJtaW5hbCB3cmFwL3Nj" +
+  "cm9sbCBiZWhhdmlvdXIuCgogICAgICAgICAgICAgICAgICAxICAgICAgICAgMiAgICAg" +
+  "ICAgIDMgICAgICAgICA0ICAgICAgICAgNSAgICAgICAgIDYgICAgICAgICA3ICAgICAg" +
+  "ICAgOCAgICAgICAgIDkKMCAgICAgICAgMDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2" +
+  "Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3" +
+  "ODkwMTIzNDU2Nzg5Ci0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0t" +
+  "LS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0t" +
+  "LQoKICBMaW5lICAxIHwgQUJDREVGR0hJSkFCQ0RFRkdISUpBQkNERUZHSElKQUJDREVG" +
+  "R0hJSkFCQ0RFRkdISUpBQkNERUZHSElKQUJDREVGR0hJSgogIExpbmUgIDIgfCBBQkNE" +
+  "RUZHSElKQUJDREVGR0hJSkFCQ0RFRkdISUpBQkNERUZHSElKQUJDREVGR0hJSkFCQ0RF" +
+  "RkdISUpBQkNERUZHSElKCiAgTGluZSAgMyB8IEFCQ0RFRkdISUpBQkNERUZHSElKQUJD" +
+  "REVGR0hJSkFCQ0RFRkdISUpBQkNERUZHSElKQUJDREVGR0hJSkFCQ0RFRkdISUoKICBM" +
+  "aW5lICA0IHwgQUJDREVGR0hJSkFCQ0RFRkdISUpBQkNERUZHSElKQUJDREVGR0hJSkFC" +
+  "Q0RFRkdISUpBQkNERUZHSElKQUJDREVGR0hJSgogIExpbmUgIDUgfCBBQkNERUZHSElK" +
+  "QUJDREVGR0hJSkFCQ0RFRkdISUpBQkNERUZHSElKQUJDREVGR0hJSkFCQ0RFRkdISUpB" +
+  "QkNERUZHSElKCiAgTGluZSAgNiB8IEFCQ0RFRkdISUpBQkNERUZHSElKQUJDREVGR0hJ" +
+  "SkFCQ0RFRkdISUpBQkNERUZHSElKQUJDREVGR0hJSkFCQ0RFRkdISUoKICBMaW5lICA3" +
+  "IHwgQUJDREVGR0hJSkFCQ0RFRkdISUpBQkNERUZHSElKQUJDREVGR0hJSkFCQ0RFRkdI" +
+  "SUpBQkNERUZHSElKQUJDREVGR0hJSgoKRG9uZS4gQ2hlY2sgZm9yIGhvcml6b250YWwg" +
+  "c2Nyb2xsIG9yIHdyYXBwaW5nLgo=";
+
+/** large — single fd_write of 300 numbered lines (~9.7 KB) to test buffer handling. */
+const LARGE_WASM_B64 =
+  "AGFzbQEAAAABEANgBH9/f38Bf2ABfwBgAAACRgIWd2FzaV9zbmFwc2hvdF9wcmV2aWV3" +
+  "MQhmZF93cml0ZQAAFndhc2lfc25hcHNob3RfcHJldmlldzEJcHJvY19leGl0AAEDAgEC" +
+  "BQMBAAEHEwIGbWVtb3J5AgAGX3N0YXJ0AAIKIwEhAEEAQRA2AgBBBEG1ygA2AgBBAUEA" +
+  "QQFBCBAAGkEAEAELC7xKAQBBEAu1SkxhcmdlIE91dHB1dCBUZXN0Cj09PT09PT09PT09" +
+  "PT09PT09ClN0cmVhbWluZyAzMDAgbnVtYmVyZWQgbGluZXMgdG8gZXhlcmNpc2UgdGhl" +
+  "IHRlcm1pbmFsIGJ1ZmZlci4KCiAgICAxOiBicmF2byBjaGFybGllIGRlbHRhIGVjaG8K" +
+  "ICAgIDI6IGNoYXJsaWUgZGVsdGEgZWNobyBmb3h0cm90CiAgICAzOiBkZWx0YSBlY2hv" +
+  "IGZveHRyb3QgZ29sZgogICAgNDogZWNobyBmb3h0cm90IGdvbGYgaG90ZWwKICAgIDU6" +
+  "IGZveHRyb3QgZ29sZiBob3RlbCBpbmRpYQogICAgNjogZ29sZiBob3RlbCBpbmRpYSBq" +
+  "dWxpZXQKICAgIDc6IGhvdGVsIGluZGlhIGp1bGlldCBraWxvCiAgICA4OiBpbmRpYSBq" +
+  "dWxpZXQga2lsbyBsaW1hCiAgICA5OiBqdWxpZXQga2lsbyBsaW1hIGFscGhhCiAgIDEw" +
+  "OiBraWxvIGxpbWEgYWxwaGEgYnJhdm8KICAgMTE6IGxpbWEgYWxwaGEgYnJhdm8gY2hh" +
+  "cmxpZQogICAxMjogYWxwaGEgYnJhdm8gY2hhcmxpZSBkZWx0YQogICAxMzogYnJhdm8g" +
+  "Y2hhcmxpZSBkZWx0YSBlY2hvCiAgIDE0OiBjaGFybGllIGRlbHRhIGVjaG8gZm94dHJv" +
+  "dAogICAxNTogZGVsdGEgZWNobyBmb3h0cm90IGdvbGYKICAgMTY6IGVjaG8gZm94dHJv" +
+  "dCBnb2xmIGhvdGVsCiAgIDE3OiBmb3h0cm90IGdvbGYgaG90ZWwgaW5kaWEKICAgMTg6" +
+  "IGdvbGYgaG90ZWwgaW5kaWEganVsaWV0CiAgIDE5OiBob3RlbCBpbmRpYSBqdWxpZXQg" +
+  "a2lsbwogICAyMDogaW5kaWEganVsaWV0IGtpbG8gbGltYQogICAyMToganVsaWV0IGtp" +
+  "bG8gbGltYSBhbHBoYQogICAyMjoga2lsbyBsaW1hIGFscGhhIGJyYXZvCiAgIDIzOiBs" +
+  "aW1hIGFscGhhIGJyYXZvIGNoYXJsaWUKICAgMjQ6IGFscGhhIGJyYXZvIGNoYXJsaWUg" +
+  "ZGVsdGEKICAgMjU6IGJyYXZvIGNoYXJsaWUgZGVsdGEgZWNobwogICAyNjogY2hhcmxp" +
+  "ZSBkZWx0YSBlY2hvIGZveHRyb3QKICAgMjc6IGRlbHRhIGVjaG8gZm94dHJvdCBnb2xm" +
+  "CiAgIDI4OiBlY2hvIGZveHRyb3QgZ29sZiBob3RlbAogICAyOTogZm94dHJvdCBnb2xm" +
+  "IGhvdGVsIGluZGlhCiAgIDMwOiBnb2xmIGhvdGVsIGluZGlhIGp1bGlldAogICAzMTog" +
+  "aG90ZWwgaW5kaWEganVsaWV0IGtpbG8KICAgMzI6IGluZGlhIGp1bGlldCBraWxvIGxp" +
+  "bWEKICAgMzM6IGp1bGlldCBraWxvIGxpbWEgYWxwaGEKICAgMzQ6IGtpbG8gbGltYSBh" +
+  "bHBoYSBicmF2bwogICAzNTogbGltYSBhbHBoYSBicmF2byBjaGFybGllCiAgIDM2OiBh" +
+  "bHBoYSBicmF2byBjaGFybGllIGRlbHRhCiAgIDM3OiBicmF2byBjaGFybGllIGRlbHRh" +
+  "IGVjaG8KICAgMzg6IGNoYXJsaWUgZGVsdGEgZWNobyBmb3h0cm90CiAgIDM5OiBkZWx0" +
+  "YSBlY2hvIGZveHRyb3QgZ29sZgogICA0MDogZWNobyBmb3h0cm90IGdvbGYgaG90ZWwK" +
+  "ICAgNDE6IGZveHRyb3QgZ29sZiBob3RlbCBpbmRpYQogICA0MjogZ29sZiBob3RlbCBp" +
+  "bmRpYSBqdWxpZXQKICAgNDM6IGhvdGVsIGluZGlhIGp1bGlldCBraWxvCiAgIDQ0OiBp" +
+  "bmRpYSBqdWxpZXQga2lsbyBsaW1hCiAgIDQ1OiBqdWxpZXQga2lsbyBsaW1hIGFscGhh" +
+  "CiAgIDQ2OiBraWxvIGxpbWEgYWxwaGEgYnJhdm8KICAgNDc6IGxpbWEgYWxwaGEgYnJh" +
+  "dm8gY2hhcmxpZQogICA0ODogYWxwaGEgYnJhdm8gY2hhcmxpZSBkZWx0YQogICA0OTog" +
+  "YnJhdm8gY2hhcmxpZSBkZWx0YSBlY2hvCiAgIDUwOiBjaGFybGllIGRlbHRhIGVjaG8g" +
+  "Zm94dHJvdAogICA1MTogZGVsdGEgZWNobyBmb3h0cm90IGdvbGYKICAgNTI6IGVjaG8g" +
+  "Zm94dHJvdCBnb2xmIGhvdGVsCiAgIDUzOiBmb3h0cm90IGdvbGYgaG90ZWwgaW5kaWEK" +
+  "ICAgNTQ6IGdvbGYgaG90ZWwgaW5kaWEganVsaWV0CiAgIDU1OiBob3RlbCBpbmRpYSBq" +
+  "dWxpZXQga2lsbwogICA1NjogaW5kaWEganVsaWV0IGtpbG8gbGltYQogICA1NzoganVs" +
+  "aWV0IGtpbG8gbGltYSBhbHBoYQogICA1ODoga2lsbyBsaW1hIGFscGhhIGJyYXZvCiAg" +
+  "IDU5OiBsaW1hIGFscGhhIGJyYXZvIGNoYXJsaWUKICAgNjA6IGFscGhhIGJyYXZvIGNo" +
+  "YXJsaWUgZGVsdGEKICAgNjE6IGJyYXZvIGNoYXJsaWUgZGVsdGEgZWNobwogICA2Mjog" +
+  "Y2hhcmxpZSBkZWx0YSBlY2hvIGZveHRyb3QKICAgNjM6IGRlbHRhIGVjaG8gZm94dHJv" +
+  "dCBnb2xmCiAgIDY0OiBlY2hvIGZveHRyb3QgZ29sZiBob3RlbAogICA2NTogZm94dHJv" +
+  "dCBnb2xmIGhvdGVsIGluZGlhCiAgIDY2OiBnb2xmIGhvdGVsIGluZGlhIGp1bGlldAog" +
+  "ICA2NzogaG90ZWwgaW5kaWEganVsaWV0IGtpbG8KICAgNjg6IGluZGlhIGp1bGlldCBr" +
+  "aWxvIGxpbWEKICAgNjk6IGp1bGlldCBraWxvIGxpbWEgYWxwaGEKICAgNzA6IGtpbG8g" +
+  "bGltYSBhbHBoYSBicmF2bwogICA3MTogbGltYSBhbHBoYSBicmF2byBjaGFybGllCiAg" +
+  "IDcyOiBhbHBoYSBicmF2byBjaGFybGllIGRlbHRhCiAgIDczOiBicmF2byBjaGFybGll" +
+  "IGRlbHRhIGVjaG8KICAgNzQ6IGNoYXJsaWUgZGVsdGEgZWNobyBmb3h0cm90CiAgIDc1" +
+  "OiBkZWx0YSBlY2hvIGZveHRyb3QgZ29sZgogICA3NjogZWNobyBmb3h0cm90IGdvbGYg" +
+  "aG90ZWwKICAgNzc6IGZveHRyb3QgZ29sZiBob3RlbCBpbmRpYQogICA3ODogZ29sZiBo" +
+  "b3RlbCBpbmRpYSBqdWxpZXQKICAgNzk6IGhvdGVsIGluZGlhIGp1bGlldCBraWxvCiAg" +
+  "IDgwOiBpbmRpYSBqdWxpZXQga2lsbyBsaW1hCiAgIDgxOiBqdWxpZXQga2lsbyBsaW1h" +
+  "IGFscGhhCiAgIDgyOiBraWxvIGxpbWEgYWxwaGEgYnJhdm8KICAgODM6IGxpbWEgYWxw" +
+  "aGEgYnJhdm8gY2hhcmxpZQogICA4NDogYWxwaGEgYnJhdm8gY2hhcmxpZSBkZWx0YQog" +
+  "ICA4NTogYnJhdm8gY2hhcmxpZSBkZWx0YSBlY2hvCiAgIDg2OiBjaGFybGllIGRlbHRh" +
+  "IGVjaG8gZm94dHJvdAogICA4NzogZGVsdGEgZWNobyBmb3h0cm90IGdvbGYKICAgODg6" +
+  "IGVjaG8gZm94dHJvdCBnb2xmIGhvdGVsCiAgIDg5OiBmb3h0cm90IGdvbGYgaG90ZWwg" +
+  "aW5kaWEKICAgOTA6IGdvbGYgaG90ZWwgaW5kaWEganVsaWV0CiAgIDkxOiBob3RlbCBp" +
+  "bmRpYSBqdWxpZXQga2lsbwogICA5MjogaW5kaWEganVsaWV0IGtpbG8gbGltYQogICA5" +
+  "MzoganVsaWV0IGtpbG8gbGltYSBhbHBoYQogICA5NDoga2lsbyBsaW1hIGFscGhhIGJy" +
+  "YXZvCiAgIDk1OiBsaW1hIGFscGhhIGJyYXZvIGNoYXJsaWUKICAgOTY6IGFscGhhIGJy" +
+  "YXZvIGNoYXJsaWUgZGVsdGEKICAgOTc6IGJyYXZvIGNoYXJsaWUgZGVsdGEgZWNobwog" +
+  "ICA5ODogY2hhcmxpZSBkZWx0YSBlY2hvIGZveHRyb3QKICAgOTk6IGRlbHRhIGVjaG8g" +
+  "Zm94dHJvdCBnb2xmCiAgMTAwOiBlY2hvIGZveHRyb3QgZ29sZiBob3RlbAogIDEwMTog" +
+  "Zm94dHJvdCBnb2xmIGhvdGVsIGluZGlhCiAgMTAyOiBnb2xmIGhvdGVsIGluZGlhIGp1" +
+  "bGlldAogIDEwMzogaG90ZWwgaW5kaWEganVsaWV0IGtpbG8KICAxMDQ6IGluZGlhIGp1" +
+  "bGlldCBraWxvIGxpbWEKICAxMDU6IGp1bGlldCBraWxvIGxpbWEgYWxwaGEKICAxMDY6" +
+  "IGtpbG8gbGltYSBhbHBoYSBicmF2bwogIDEwNzogbGltYSBhbHBoYSBicmF2byBjaGFy" +
+  "bGllCiAgMTA4OiBhbHBoYSBicmF2byBjaGFybGllIGRlbHRhCiAgMTA5OiBicmF2byBj" +
+  "aGFybGllIGRlbHRhIGVjaG8KICAxMTA6IGNoYXJsaWUgZGVsdGEgZWNobyBmb3h0cm90" +
+  "CiAgMTExOiBkZWx0YSBlY2hvIGZveHRyb3QgZ29sZgogIDExMjogZWNobyBmb3h0cm90" +
+  "IGdvbGYgaG90ZWwKICAxMTM6IGZveHRyb3QgZ29sZiBob3RlbCBpbmRpYQogIDExNDog" +
+  "Z29sZiBob3RlbCBpbmRpYSBqdWxpZXQKICAxMTU6IGhvdGVsIGluZGlhIGp1bGlldCBr" +
+  "aWxvCiAgMTE2OiBpbmRpYSBqdWxpZXQga2lsbyBsaW1hCiAgMTE3OiBqdWxpZXQga2ls" +
+  "byBsaW1hIGFscGhhCiAgMTE4OiBraWxvIGxpbWEgYWxwaGEgYnJhdm8KICAxMTk6IGxp" +
+  "bWEgYWxwaGEgYnJhdm8gY2hhcmxpZQogIDEyMDogYWxwaGEgYnJhdm8gY2hhcmxpZSBk" +
+  "ZWx0YQogIDEyMTogYnJhdm8gY2hhcmxpZSBkZWx0YSBlY2hvCiAgMTIyOiBjaGFybGll" +
+  "IGRlbHRhIGVjaG8gZm94dHJvdAogIDEyMzogZGVsdGEgZWNobyBmb3h0cm90IGdvbGYK" +
+  "ICAxMjQ6IGVjaG8gZm94dHJvdCBnb2xmIGhvdGVsCiAgMTI1OiBmb3h0cm90IGdvbGYg" +
+  "aG90ZWwgaW5kaWEKICAxMjY6IGdvbGYgaG90ZWwgaW5kaWEganVsaWV0CiAgMTI3OiBo" +
+  "b3RlbCBpbmRpYSBqdWxpZXQga2lsbwogIDEyODogaW5kaWEganVsaWV0IGtpbG8gbGlt" +
+  "YQogIDEyOToganVsaWV0IGtpbG8gbGltYSBhbHBoYQogIDEzMDoga2lsbyBsaW1hIGFs" +
+  "cGhhIGJyYXZvCiAgMTMxOiBsaW1hIGFscGhhIGJyYXZvIGNoYXJsaWUKICAxMzI6IGFs" +
+  "cGhhIGJyYXZvIGNoYXJsaWUgZGVsdGEKICAxMzM6IGJyYXZvIGNoYXJsaWUgZGVsdGEg" +
+  "ZWNobwogIDEzNDogY2hhcmxpZSBkZWx0YSBlY2hvIGZveHRyb3QKICAxMzU6IGRlbHRh" +
+  "IGVjaG8gZm94dHJvdCBnb2xmCiAgMTM2OiBlY2hvIGZveHRyb3QgZ29sZiBob3RlbAog" +
+  "IDEzNzogZm94dHJvdCBnb2xmIGhvdGVsIGluZGlhCiAgMTM4OiBnb2xmIGhvdGVsIGlu" +
+  "ZGlhIGp1bGlldAogIDEzOTogaG90ZWwgaW5kaWEganVsaWV0IGtpbG8KICAxNDA6IGlu" +
+  "ZGlhIGp1bGlldCBraWxvIGxpbWEKICAxNDE6IGp1bGlldCBraWxvIGxpbWEgYWxwaGEK" +
+  "ICAxNDI6IGtpbG8gbGltYSBhbHBoYSBicmF2bwogIDE0MzogbGltYSBhbHBoYSBicmF2" +
+  "byBjaGFybGllCiAgMTQ0OiBhbHBoYSBicmF2byBjaGFybGllIGRlbHRhCiAgMTQ1OiBi" +
+  "cmF2byBjaGFybGllIGRlbHRhIGVjaG8KICAxNDY6IGNoYXJsaWUgZGVsdGEgZWNobyBm" +
+  "b3h0cm90CiAgMTQ3OiBkZWx0YSBlY2hvIGZveHRyb3QgZ29sZgogIDE0ODogZWNobyBm" +
+  "b3h0cm90IGdvbGYgaG90ZWwKICAxNDk6IGZveHRyb3QgZ29sZiBob3RlbCBpbmRpYQog" +
+  "IDE1MDogZ29sZiBob3RlbCBpbmRpYSBqdWxpZXQKICAxNTE6IGhvdGVsIGluZGlhIGp1" +
+  "bGlldCBraWxvCiAgMTUyOiBpbmRpYSBqdWxpZXQga2lsbyBsaW1hCiAgMTUzOiBqdWxp" +
+  "ZXQga2lsbyBsaW1hIGFscGhhCiAgMTU0OiBraWxvIGxpbWEgYWxwaGEgYnJhdm8KICAx" +
+  "NTU6IGxpbWEgYWxwaGEgYnJhdm8gY2hhcmxpZQogIDE1NjogYWxwaGEgYnJhdm8gY2hh" +
+  "cmxpZSBkZWx0YQogIDE1NzogYnJhdm8gY2hhcmxpZSBkZWx0YSBlY2hvCiAgMTU4OiBj" +
+  "aGFybGllIGRlbHRhIGVjaG8gZm94dHJvdAogIDE1OTogZGVsdGEgZWNobyBmb3h0cm90" +
+  "IGdvbGYKICAxNjA6IGVjaG8gZm94dHJvdCBnb2xmIGhvdGVsCiAgMTYxOiBmb3h0cm90" +
+  "IGdvbGYgaG90ZWwgaW5kaWEKICAxNjI6IGdvbGYgaG90ZWwgaW5kaWEganVsaWV0CiAg" +
+  "MTYzOiBob3RlbCBpbmRpYSBqdWxpZXQga2lsbwogIDE2NDogaW5kaWEganVsaWV0IGtp" +
+  "bG8gbGltYQogIDE2NToganVsaWV0IGtpbG8gbGltYSBhbHBoYQogIDE2Njoga2lsbyBs" +
+  "aW1hIGFscGhhIGJyYXZvCiAgMTY3OiBsaW1hIGFscGhhIGJyYXZvIGNoYXJsaWUKICAx" +
+  "Njg6IGFscGhhIGJyYXZvIGNoYXJsaWUgZGVsdGEKICAxNjk6IGJyYXZvIGNoYXJsaWUg" +
+  "ZGVsdGEgZWNobwogIDE3MDogY2hhcmxpZSBkZWx0YSBlY2hvIGZveHRyb3QKICAxNzE6" +
+  "IGRlbHRhIGVjaG8gZm94dHJvdCBnb2xmCiAgMTcyOiBlY2hvIGZveHRyb3QgZ29sZiBo" +
+  "b3RlbAogIDE3MzogZm94dHJvdCBnb2xmIGhvdGVsIGluZGlhCiAgMTc0OiBnb2xmIGhv" +
+  "dGVsIGluZGlhIGp1bGlldAogIDE3NTogaG90ZWwgaW5kaWEganVsaWV0IGtpbG8KICAx" +
+  "NzY6IGluZGlhIGp1bGlldCBraWxvIGxpbWEKICAxNzc6IGp1bGlldCBraWxvIGxpbWEg" +
+  "YWxwaGEKICAxNzg6IGtpbG8gbGltYSBhbHBoYSBicmF2bwogIDE3OTogbGltYSBhbHBo" +
+  "YSBicmF2byBjaGFybGllCiAgMTgwOiBhbHBoYSBicmF2byBjaGFybGllIGRlbHRhCiAg" +
+  "MTgxOiBicmF2byBjaGFybGllIGRlbHRhIGVjaG8KICAxODI6IGNoYXJsaWUgZGVsdGEg" +
+  "ZWNobyBmb3h0cm90CiAgMTgzOiBkZWx0YSBlY2hvIGZveHRyb3QgZ29sZgogIDE4NDog" +
+  "ZWNobyBmb3h0cm90IGdvbGYgaG90ZWwKICAxODU6IGZveHRyb3QgZ29sZiBob3RlbCBp" +
+  "bmRpYQogIDE4NjogZ29sZiBob3RlbCBpbmRpYSBqdWxpZXQKICAxODc6IGhvdGVsIGlu" +
+  "ZGlhIGp1bGlldCBraWxvCiAgMTg4OiBpbmRpYSBqdWxpZXQga2lsbyBsaW1hCiAgMTg5" +
+  "OiBqdWxpZXQga2lsbyBsaW1hIGFscGhhCiAgMTkwOiBraWxvIGxpbWEgYWxwaGEgYnJh" +
+  "dm8KICAxOTE6IGxpbWEgYWxwaGEgYnJhdm8gY2hhcmxpZQogIDE5MjogYWxwaGEgYnJh" +
+  "dm8gY2hhcmxpZSBkZWx0YQogIDE5MzogYnJhdm8gY2hhcmxpZSBkZWx0YSBlY2hvCiAg" +
+  "MTk0OiBjaGFybGllIGRlbHRhIGVjaG8gZm94dHJvdAogIDE5NTogZGVsdGEgZWNobyBm" +
+  "b3h0cm90IGdvbGYKICAxOTY6IGVjaG8gZm94dHJvdCBnb2xmIGhvdGVsCiAgMTk3OiBm" +
+  "b3h0cm90IGdvbGYgaG90ZWwgaW5kaWEKICAxOTg6IGdvbGYgaG90ZWwgaW5kaWEganVs" +
+  "aWV0CiAgMTk5OiBob3RlbCBpbmRpYSBqdWxpZXQga2lsbwogIDIwMDogaW5kaWEganVs" +
+  "aWV0IGtpbG8gbGltYQogIDIwMToganVsaWV0IGtpbG8gbGltYSBhbHBoYQogIDIwMjog" +
+  "a2lsbyBsaW1hIGFscGhhIGJyYXZvCiAgMjAzOiBsaW1hIGFscGhhIGJyYXZvIGNoYXJs" +
+  "aWUKICAyMDQ6IGFscGhhIGJyYXZvIGNoYXJsaWUgZGVsdGEKICAyMDU6IGJyYXZvIGNo" +
+  "YXJsaWUgZGVsdGEgZWNobwogIDIwNjogY2hhcmxpZSBkZWx0YSBlY2hvIGZveHRyb3QK" +
+  "ICAyMDc6IGRlbHRhIGVjaG8gZm94dHJvdCBnb2xmCiAgMjA4OiBlY2hvIGZveHRyb3Qg" +
+  "Z29sZiBob3RlbAogIDIwOTogZm94dHJvdCBnb2xmIGhvdGVsIGluZGlhCiAgMjEwOiBn" +
+  "b2xmIGhvdGVsIGluZGlhIGp1bGlldAogIDIxMTogaG90ZWwgaW5kaWEganVsaWV0IGtp" +
+  "bG8KICAyMTI6IGluZGlhIGp1bGlldCBraWxvIGxpbWEKICAyMTM6IGp1bGlldCBraWxv" +
+  "IGxpbWEgYWxwaGEKICAyMTQ6IGtpbG8gbGltYSBhbHBoYSBicmF2bwogIDIxNTogbGlt" +
+  "YSBhbHBoYSBicmF2byBjaGFybGllCiAgMjE2OiBhbHBoYSBicmF2byBjaGFybGllIGRl" +
+  "bHRhCiAgMjE3OiBicmF2byBjaGFybGllIGRlbHRhIGVjaG8KICAyMTg6IGNoYXJsaWUg" +
+  "ZGVsdGEgZWNobyBmb3h0cm90CiAgMjE5OiBkZWx0YSBlY2hvIGZveHRyb3QgZ29sZgog" +
+  "IDIyMDogZWNobyBmb3h0cm90IGdvbGYgaG90ZWwKICAyMjE6IGZveHRyb3QgZ29sZiBo" +
+  "b3RlbCBpbmRpYQogIDIyMjogZ29sZiBob3RlbCBpbmRpYSBqdWxpZXQKICAyMjM6IGhv" +
+  "dGVsIGluZGlhIGp1bGlldCBraWxvCiAgMjI0OiBpbmRpYSBqdWxpZXQga2lsbyBsaW1h" +
+  "CiAgMjI1OiBqdWxpZXQga2lsbyBsaW1hIGFscGhhCiAgMjI2OiBraWxvIGxpbWEgYWxw" +
+  "aGEgYnJhdm8KICAyMjc6IGxpbWEgYWxwaGEgYnJhdm8gY2hhcmxpZQogIDIyODogYWxw" +
+  "aGEgYnJhdm8gY2hhcmxpZSBkZWx0YQogIDIyOTogYnJhdm8gY2hhcmxpZSBkZWx0YSBl" +
+  "Y2hvCiAgMjMwOiBjaGFybGllIGRlbHRhIGVjaG8gZm94dHJvdAogIDIzMTogZGVsdGEg" +
+  "ZWNobyBmb3h0cm90IGdvbGYKICAyMzI6IGVjaG8gZm94dHJvdCBnb2xmIGhvdGVsCiAg" +
+  "MjMzOiBmb3h0cm90IGdvbGYgaG90ZWwgaW5kaWEKICAyMzQ6IGdvbGYgaG90ZWwgaW5k" +
+  "aWEganVsaWV0CiAgMjM1OiBob3RlbCBpbmRpYSBqdWxpZXQga2lsbwogIDIzNjogaW5k" +
+  "aWEganVsaWV0IGtpbG8gbGltYQogIDIzNzoganVsaWV0IGtpbG8gbGltYSBhbHBoYQog" +
+  "IDIzODoga2lsbyBsaW1hIGFscGhhIGJyYXZvCiAgMjM5OiBsaW1hIGFscGhhIGJyYXZv" +
+  "IGNoYXJsaWUKICAyNDA6IGFscGhhIGJyYXZvIGNoYXJsaWUgZGVsdGEKICAyNDE6IGJy" +
+  "YXZvIGNoYXJsaWUgZGVsdGEgZWNobwogIDI0MjogY2hhcmxpZSBkZWx0YSBlY2hvIGZv" +
+  "eHRyb3QKICAyNDM6IGRlbHRhIGVjaG8gZm94dHJvdCBnb2xmCiAgMjQ0OiBlY2hvIGZv" +
+  "eHRyb3QgZ29sZiBob3RlbAogIDI0NTogZm94dHJvdCBnb2xmIGhvdGVsIGluZGlhCiAg" +
+  "MjQ2OiBnb2xmIGhvdGVsIGluZGlhIGp1bGlldAogIDI0NzogaG90ZWwgaW5kaWEganVs" +
+  "aWV0IGtpbG8KICAyNDg6IGluZGlhIGp1bGlldCBraWxvIGxpbWEKICAyNDk6IGp1bGll" +
+  "dCBraWxvIGxpbWEgYWxwaGEKICAyNTA6IGtpbG8gbGltYSBhbHBoYSBicmF2bwogIDI1" +
+  "MTogbGltYSBhbHBoYSBicmF2byBjaGFybGllCiAgMjUyOiBhbHBoYSBicmF2byBjaGFy" +
+  "bGllIGRlbHRhCiAgMjUzOiBicmF2byBjaGFybGllIGRlbHRhIGVjaG8KICAyNTQ6IGNo" +
+  "YXJsaWUgZGVsdGEgZWNobyBmb3h0cm90CiAgMjU1OiBkZWx0YSBlY2hvIGZveHRyb3Qg" +
+  "Z29sZgogIDI1NjogZWNobyBmb3h0cm90IGdvbGYgaG90ZWwKICAyNTc6IGZveHRyb3Qg" +
+  "Z29sZiBob3RlbCBpbmRpYQogIDI1ODogZ29sZiBob3RlbCBpbmRpYSBqdWxpZXQKICAy" +
+  "NTk6IGhvdGVsIGluZGlhIGp1bGlldCBraWxvCiAgMjYwOiBpbmRpYSBqdWxpZXQga2ls" +
+  "byBsaW1hCiAgMjYxOiBqdWxpZXQga2lsbyBsaW1hIGFscGhhCiAgMjYyOiBraWxvIGxp" +
+  "bWEgYWxwaGEgYnJhdm8KICAyNjM6IGxpbWEgYWxwaGEgYnJhdm8gY2hhcmxpZQogIDI2" +
+  "NDogYWxwaGEgYnJhdm8gY2hhcmxpZSBkZWx0YQogIDI2NTogYnJhdm8gY2hhcmxpZSBk" +
+  "ZWx0YSBlY2hvCiAgMjY2OiBjaGFybGllIGRlbHRhIGVjaG8gZm94dHJvdAogIDI2Nzog" +
+  "ZGVsdGEgZWNobyBmb3h0cm90IGdvbGYKICAyNjg6IGVjaG8gZm94dHJvdCBnb2xmIGhv" +
+  "dGVsCiAgMjY5OiBmb3h0cm90IGdvbGYgaG90ZWwgaW5kaWEKICAyNzA6IGdvbGYgaG90" +
+  "ZWwgaW5kaWEganVsaWV0CiAgMjcxOiBob3RlbCBpbmRpYSBqdWxpZXQga2lsbwogIDI3" +
+  "MjogaW5kaWEganVsaWV0IGtpbG8gbGltYQogIDI3MzoganVsaWV0IGtpbG8gbGltYSBh" +
+  "bHBoYQogIDI3NDoka2lsbyBsaW1hIGFscGhhIGJyYXZvCiAgMjc1OiBsaW1hIGFscGhh" +
+  "IGJyYXZvIGNoYXJsaWUKICAyNzY6IGFscGhhIGJyYXZvIGNoYXJsaWUgZGVsdGEKICAy" +
+  "Nzc6IGJyYXZvIGNoYXJsaWUgZGVsdGEgZWNobwogIDI3ODogY2hhcmxpZSBkZWx0YSBl" +
+  "Y2hvIGZveHRyb3QKICAyNzk6IGRlbHRhIGVjaG8gZm94dHJvdCBnb2xmCiAgMjgwOiBl" +
+  "Y2hvIGZveHRyb3QgZ29sZiBob3RlbAogIDI4MTogZm94dHJvdCBnb2xmIGhvdGVsIGlu" +
+  "ZGlhCiAgMjgyOiBnb2xmIGhvdGVsIGluZGlhIGp1bGlldAogIDI4MzogaG90ZWwgaW5k" +
+  "aWEganVsaWV0IGtpbG8KICAyODQ6IGluZGlhIGp1bGlldCBraWxvIGxpbWEKICAyODU6" +
+  "IGp1bGlldCBraWxvIGxpbWEgYWxwaGEKICAyODY6IGtpbG8gbGltYSBhbHBoYSBicmF2" +
+  "bwogIDI4NzogbGltYSBhbHBoYSBicmF2byBjaGFybGllCiAgMjg4OiBhbHBoYSBicmF2" +
+  "byBjaGFybGllIGRlbHRhCiAgMjg5OiBicmF2byBjaGFybGllIGRlbHRhIGVjaG8KICAy" +
+  "OTA6IGNoYXJsaWUgZGVsdGEgZWNobyBmb3h0cm90CiAgMjkxOiBkZWx0YSBlY2hvIGZv" +
+  "eHRyb3QgZ29sZgogIDI5MjogZWNobyBmb3h0cm90IGdvbGYgaG90ZWwKICAyOTM6IGZv" +
+  "eHRyb3QgZ29sZiBob3RlbCBpbmRpYQogIDI5NDogZ29sZiBob3RlbCBpbmRpYSBqdWxp" +
+  "ZXQKICAyOTU6IGhvdGVsIGluZGlhIGp1bGlldCBraWxvCiAgMjk2OiBpbmRpYSBqdWxp" +
+  "ZXQga2lsbyBsaW1hCiAgMjk3OiBqdWxpZXQga2lsbyBsaW1hIGFscGhhCiAgMjk4OiBr" +
+  "aWxvIGxpbWEgYWxwaGEgYnJhdm8KICAyOTk6IGxpbWEgYWxwaGEgYnJhdm8gY2hhcmxp" +
+  "ZQogIDMwMDogYWxwaGEgYnJhdm8gY2hhcmxpZSBkZWx0YQoKRG9uZS4gMzAwIGxpbmVz" +
+  "IHdyaXR0ZW4uCg==";
+
+/** csv — writes /workspace/sales.csv (48 rows) for the DataGrid previewer. */
+const CSV_WASM_B64 =
+  "AGFzbQEAAAABIgVgCX9/f39/fn5/fwF/YAR/f39/AX9gAX8Bf2ABfwBgAAACiwEEFndh" +
+  "c2lfc25hcHNob3RfcHJldmlldzEJcGF0aF9vcGVuAAAWd2FzaV9zbmFwc2hvdF9wcmV2" +
+  "aWV3MQhmZF93cml0ZQABFndhc2lfc25hcHNob3RfcHJldmlldzEIZmRfY2xvc2UAAhZ3" +
+  "YXNpX3NuYXBzaG90X3ByZXZpZXcxCXByb2NfZXhpdAADAwIBBAUDAQABBxMCBm1lbW9y" +
+  "eQIABl9zdGFydAAECl4BXABBAEEQNgIAQQRB9wA2AgBBAUEAQQFBCBABGkEDQQBBhwFB" +
+  "FEEJQn9Cf0EAQQwQABpBAEGbATYCAEEEQb0HNgIAQQwoAgBBAEEBQQgQARpBDCgCABAC" +
+  "GkEAEAMLC88IAQBBEAvICENTViBGaWxlIERlbW8KPT09PT09PT09PT09PQogIFdyaXRp" +
+  "bmcgL3dvcmtzcGFjZS9zYWxlcy5jc3YgLi4uCiAgUHJldmlldyBpdCBpbiB0aGUgbGVm" +
+  "dCBwYW5lbCB1c2luZyB0aGUgRGF0YUdyaWQgdmlldy4KL3dvcmtzcGFjZS9zYWxlcy5j" +
+  "c3Ztb250aCxyZWdpb24scmV2ZW51ZSx1bml0cwpKYW4sTm9ydGgsOTM4MTAsMTA3Ckph" +
+  "bixTb3V0aCwxMzI3OCw0MjkKSmFuLEVhc3QsNDYwNDgsMTc1CkphbixXZXN0LDM5MjU2" +
+  "LDEyMQpGZWIsTm9ydGgsMjM0MzQsMzk2CkZlYixTb3V0aCw4MTQ4Miw5NApGZWIsRWFz" +
+  "dCw4NzM5NywyNjYKRmViLFdlc3QsMTQxNjUsNjUKTWFyLE5vcnRoLDIyMjgwLDE2MQpN" +
+  "YXIsU291dGgsNDA0OTUsMzA4Ck1hcixFYXN0LDg4OTA3LDYzCk1hcixXZXN0LDgzNTYz" +
+  "LDE1MQpBcHIsTm9ydGgsOTUxODEsNDA5CkFwcixTb3V0aCw4MTQyNiwyNjQKQXByLEVh" +
+  "c3QsMzg4OTMsMjc5CkFwcixXZXN0LDg3MjM2LDE5MgpNYXksTm9ydGgsMTA4NTEsNDM4" +
+  "Ck1heSxTb3V0aCwzMDkyNiw0MDcKTWF5LEVhc3QsNjUzOTIsMjI0Ck1heSxXZXN0LDQ2" +
+  "NDIxLDEyOQpKdW4sTm9ydGgsMzgyMjEsNDQwCkp1bixTb3V0aCw1NDExOCwxMDIKSnVu" +
+  "LEVhc3QsMjIxNTYsMjQ0Ckp1bixXZXN0LDIyNjc2LDIzMwpKdWwsTm9ydGgsNTUwODIs" +
+  "MzU5Ckp1bCxTb3V0aCw0NDY3MSw0NjMKSnVsLEVhc3QsMTU2OTUsNDIzCkp1bCxXZXN0" +
+  "LDcwMjE3LDMyNApBdWcsTm9ydGgsMjYzNjEsMjQzCkF1ZyxTb3V0aCwyMDMyOCwzMzIK" +
+  "QXVnLEVhc3QsNDg0MjcsNDc0CkF1ZyxXZXN0LDkyMzk3LDM2NgpTZXAsTm9ydGgsNTc0" +
+  "MDAsMzQ1ClNlcCxTb3V0aCwzNTIwMyw0MTAKU2VwLEVhc3QsMTkxMTYsNzMKU2VwLFdl" +
+  "c3QsOTY2NzMsMTY2Ck9jdCxOb3J0aCw0NzkzMCw5MApPY3QsU291dGgsNDA1MTIsNDkz" +
+  "Ck9jdCxFYXN0LDIzMjM4LDI0NApPY3QsV2VzdCw0NjQzNCwyODIKTm92LE5vcnRoLDkz" +
+  "MzIwLDQ3NwpOb3YsU291dGgsNTc4MTksMTMzCk5vdixFYXN0LDU4NTIwLDIzMQpOb3Ys" +
+  "V2VzdCwzNzQ2MCwzOTMKRGVjLE5vcnRoLDQ0OTkzLDQwOQpEZWMsU291dGgsOTQ5Mzks" +
+  "ODYKRGVjLEVhc3QsODk4NDAsMzc1CkRlYyxXZXN0LDMyNDMxLDMyMwo=";
+
+/** chart — writes /workspace/metrics.json (timeseries) for the ChartView previewer. */
+const CHART_WASM_B64 =
+  "AGFzbQEAAAABIgVgCX9/f39/fn5/fwF/YAR/f39/AX9gAX8Bf2ABfwBgAAACiwEEFndh" +
+  "c2lfc25hcHNob3RfcHJldmlldzEJcGF0aF9vcGVuAAAWd2FzaV9zbmFwc2hvdF9wcmV2" +
+  "aWV3MQhmZF93cml0ZQABFndhc2lfc25hcHNob3RfcHJldmlldzEIZmRfY2xvc2UAAhZ3" +
+  "YXNpX3NuYXBzaG90X3ByZXZpZXcxCXByb2NfZXhpdAADAwIBBAUDAQABBxMCBm1lbW9y" +
+  "eQIABl9zdGFydAAECl4BXABBAEEQNgIAQQRB+gA2AgBBAUEAQQFBCBABGkEDQQBBigFB" +
+  "F0EJQn9Cf0EAQQwQABpBAEGhATYCAEEEQbQCNgIAQQwoAgBBAEEBQQgQARpBDCgCABAC" +
+  "GkEAEAMLC8wDAQBBEAvFA0pTT04gQ2hhcnQgRGVtbwo9PT09PT09PT09PT09PT0KICBX" +
+  "cml0aW5nIC93b3Jrc3BhY2UvbWV0cmljcy5qc29uIC4uLgogIFByZXZpZXcgaXQgaW4g" +
+  "dGhlIGxlZnQgcGFuZWwgdXNpbmcgdGhlIENoYXJ0Vmlldy4KL3dvcmtzcGFjZS9tZXRy" +
+  "aWNzLmpzb257InR5cGUiOiJ0aW1lc2VyaWVzIiwibGFiZWxzIjpbIkphbiIsIkZlYiIs" +
+  "Ik1hciIsIkFwciIsIk1heSIsIkp1biIsIkp1bCIsIkF1ZyIsIlNlcCIsIk9jdCIsIk5v" +
+  "diIsIkRlYyJdLCJzZXJpZXMiOlt7Im5hbWUiOiJSZXF1ZXN0cyIsImRhdGEiOlsxMjAs" +
+  "MTQ1LDEzMiwxNzgsMjAxLDE4OSwyMTUsMTk4LDIzMCwyNDUsMjIwLDI2MF19LHsibmFt" +
+  "ZSI6IkVycm9ycyIsImRhdGEiOls1LDgsMywxMiw3LDQsOSw2LDExLDgsNSw3XX0seyJu" +
+  "YW1lIjoiUDk1IG1zIiwiZGF0YSI6WzQyLDM4LDQ1LDUxLDQ4LDQ0LDUyLDQ3LDU1LDQ5" +
+  "LDQzLDU4XX1dfQ==";
+
 /** Files — writes two files to /workspace via raw WASI path_open calls.
  *  The VFS snapshot is delivered inline in the WebSocket exit frame so the
  *  file tree populates without requiring LIBSQL_URL to be configured.
@@ -158,15 +466,28 @@ const FILES_WASM_B64 =
   "aXR0ZW4iOjJ9";
 
 // ── Demo registry ─────────────────────────────────────────────────────────────
-type DemoKey = "noop" | "hello" | "counter" | "fibonacci" | "primes" | "files";
+type DemoKey =
+  | "noop" | "hello" | "counter" | "fibonacci" | "primes" | "files"
+  | "exit1" | "trap" | "unicode" | "longlines" | "large" | "csv" | "chart";
 
 const DEMOS: Record<DemoKey, { label: string; description: string; wasmB64: string }> = {
-  noop:      { label: "noop",      description: "No output — pipeline smoke test",              wasmB64: NOOP_WASM_B64      },
-  hello:     { label: "hello",     description: "Greeting banner + runtime info",               wasmB64: HELLO_WASM_B64     },
-  counter:   { label: "counter",   description: "Count 1→20 (streamed per fd_write call)",      wasmB64: COUNTER_WASM_B64   },
-  fibonacci: { label: "fibonacci", description: "First 20 Fibonacci numbers",                   wasmB64: FIBONACCI_WASM_B64 },
-  primes:    { label: "primes",    description: "Sieve of Eratosthenes up to 100",              wasmB64: PRIMES_WASM_B64    },
-  files:     { label: "files",     description: "Writes 2 files to /workspace — tests VFS I/O", wasmB64: FILES_WASM_B64     },
+  // ── Core demos ──────────────────────────────────────────────────────────
+  noop:      { label: "noop",      description: "No output — pipeline smoke test",               wasmB64: NOOP_WASM_B64      },
+  hello:     { label: "hello",     description: "Greeting banner + runtime info",                wasmB64: HELLO_WASM_B64     },
+  counter:   { label: "counter",   description: "Count 1→20 (streamed per fd_write call)",       wasmB64: COUNTER_WASM_B64   },
+  fibonacci: { label: "fibonacci", description: "First 20 Fibonacci numbers",                    wasmB64: FIBONACCI_WASM_B64 },
+  primes:    { label: "primes",    description: "Sieve of Eratosthenes up to 100",               wasmB64: PRIMES_WASM_B64    },
+  files:     { label: "files",     description: "Writes 2 files to /workspace — tests VFS I/O",  wasmB64: FILES_WASM_B64     },
+  // ── Error-path tests ─────────────────────────────────────────────────────
+  exit1:     { label: "exit1",     description: "proc_exit(1) — exit code shown in red",         wasmB64: EXIT1_WASM_B64     },
+  trap:      { label: "trap",      description: "WASM unreachable trap — tests crashed state",   wasmB64: TRAP_WASM_B64      },
+  // ── Terminal rendering tests ──────────────────────────────────────────────
+  unicode:   { label: "unicode",   description: "Emoji, CJK, Arabic, box-drawing characters",    wasmB64: UNICODE_WASM_B64   },
+  longlines: { label: "longlines", description: "~90-char lines — tests wrap/horizontal scroll", wasmB64: LONGLINES_WASM_B64 },
+  large:     { label: "large",     description: "300 lines in one write (~9.7 KB buffer)",       wasmB64: LARGE_WASM_B64     },
+  // ── File previewer tests ──────────────────────────────────────────────────
+  csv:       { label: "csv",       description: "Writes sales.csv — tests DataGrid previewer",   wasmB64: CSV_WASM_B64       },
+  chart:     { label: "chart",     description: "Writes metrics.json — tests ChartView",         wasmB64: CHART_WASM_B64     },
 };
 
 // Detect Mac so we show ⌘ vs Ctrl in hints
@@ -190,6 +511,8 @@ export default function ExecutionConsole() {
   const [inlineVfsSnapshot, setInlineVfsSnapshot] = useState<Record<string, string>>({});
   /** Decoded content of the currently-previewed inline file, or undefined if using API. */
   const [inlineFileContent, setInlineFileContent] = useState<string | undefined>(undefined);
+  /** Exit code from the last completed execution (proc_exit value). */
+  const [lastExitCode, setLastExitCode] = useState<number>(0);
 
   // ── Actions ────────────────────────────────────────────────────────────
 
@@ -214,6 +537,7 @@ export default function ExecutionConsole() {
     setInlineVfsEntries([]);
     setInlineVfsSnapshot({});
     setInlineFileContent(undefined);
+    setLastExitCode(0);
   }, []);
 
   const handleFileSelect = useCallback((path: string) => {
@@ -386,6 +710,8 @@ export default function ExecutionConsole() {
                   ? "Session active — connected to sandbox"
                   : sandboxState === "crashed"
                   ? "Session crashed — reconnect or reset"
+                  : sandboxState === "nonzero"
+                  ? `Session ended — non-zero exit (code ${lastExitCode})`
                   : "Session ended"
               }
               side="bottom"
@@ -399,7 +725,7 @@ export default function ExecutionConsole() {
                   className={`h-1.5 w-1.5 rounded-full ${
                     sandboxState === "running"
                       ? "bg-[var(--color-ok)] animate-pulse"
-                      : sandboxState === "crashed"
+                      : sandboxState === "crashed" || sandboxState === "nonzero"
                       ? "bg-[var(--color-danger)]"
                       : "bg-[var(--color-text-muted)]"
                   }`}
@@ -520,6 +846,7 @@ export default function ExecutionConsole() {
                           onRun={handleRun}
                           onHelp={() => setHelpOpen(true)}
                           sandboxState={sandboxState}
+                          lastExitCode={lastExitCode}
                           mod={MOD}
                         />
                       )}
@@ -559,8 +886,14 @@ export default function ExecutionConsole() {
                           sessionId={sessionId}
                           running={sandboxState === "running"}
                           wasmB64={DEMOS[selectedDemo].wasmB64}
-                          onEnd={(outcome, vfsSnapshot) => {
-                            setSandboxState(outcome === "complete" ? "complete" : "crashed");
+                          onEnd={(outcome, vfsSnapshot, exitCode) => {
+                            if (outcome !== "complete") {
+                              setSandboxState("crashed");
+                            } else {
+                              const code = exitCode ?? 0;
+                              setLastExitCode(code);
+                              setSandboxState(code === 0 ? "complete" : "nonzero");
+                            }
                             if (vfsSnapshot && Object.keys(vfsSnapshot).length > 0) {
                               // Store raw snapshot for on-demand content decoding when the
                               // user clicks a file in the tree.  Go's JSON encoder auto-
@@ -702,11 +1035,13 @@ function WelcomePane({
   onRun,
   onHelp,
   sandboxState,
+  lastExitCode,
   mod,
 }: {
   onRun:  () => void;
   onHelp: () => void;
   sandboxState: SandboxState;
+  lastExitCode: number;
   mod: string;
 }) {
   if (sandboxState === "complete") {
@@ -720,6 +1055,34 @@ function WelcomePane({
           <p className="font-mono text-[11px] text-[var(--color-text-muted)]">
             Terminal output is shown in the console above. Output files, if any,
             appear in the left panel.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={onRun}
+            className="flex items-center gap-1.5 rounded-md bg-[var(--color-accent)] px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-[var(--color-accent-dim)]"
+          >
+            <Play className="h-3.5 w-3.5" />
+            Run Again
+            <kbd className="ml-1 rounded border border-white/30 px-1 py-px font-mono text-[9px] opacity-70">
+              {mod}↵
+            </kbd>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (sandboxState === "nonzero") {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
+        <XCircle className="h-10 w-10 text-[var(--color-danger)]" />
+        <div className="space-y-1">
+          <p className="font-mono text-sm font-semibold text-[var(--color-danger)]">
+            Exited with code {lastExitCode}
+          </p>
+          <p className="font-mono text-[11px] text-[var(--color-text-muted)]">
+            The process terminated with a non-zero exit code. See terminal output above for details.
           </p>
         </div>
         <div className="flex gap-2">

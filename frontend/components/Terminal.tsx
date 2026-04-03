@@ -31,8 +31,10 @@ interface TerminalProps {
    *                 when the WASM program wrote files during execution.
    *                 Lets the parent populate the file tree without needing
    *                 VFS persistence (LIBSQL_URL) to be configured.
+   * exitCode      → the WASM proc_exit() code (0 = success, non-zero = failure).
+   *                 Only meaningful when outcome is "complete".
    */
-  onEnd?: (outcome: "complete" | "error", vfsSnapshot?: Record<string, string>) => void;
+  onEnd?: (outcome: "complete" | "error", vfsSnapshot?: Record<string, string>, exitCode?: number) => void;
 }
 
 // The maximum number of bytes we'll batch into a single write call.
@@ -61,6 +63,13 @@ export default function Terminal({ sessionId, running, wasmB64, onEnd }: Termina
   // VFS snapshot received in the exit frame — held until onclose fires so
   // we can pass it to onEnd in one call.
   const vfsSnapshotRef = useRef<Record<string, string> | undefined>(undefined);
+
+  // Exit code from proc_exit() — captured in the exit frame, forwarded via onEnd.
+  const exitCodeRef = useRef<number | undefined>(undefined);
+
+  // Set to true when the exit frame contains a "trap" field, so onclose can
+  // route to the "crashed" outcome rather than "complete".
+  const hasTrapRef = useRef(false);
 
   // ── Init xterm (once, on mount) ───────────────────────────────────────
 
@@ -294,7 +303,19 @@ export default function Terminal({ sessionId, running, wasmB64, onEnd }: Termina
               vfsSnapshotRef.current = snap as Record<string, string>;
             }
 
-            console.log("[Terminal] exit frame received, code:", msg.code);
+            // Capture exit code so onEnd can surface it to the parent.
+            exitCodeRef.current = msg.code ?? 0;
+
+            // Detect WASM trap (unreachable, OOB memory, etc.)
+            const trapMsg = (msg as Record<string, unknown>).trap;
+            if (typeof trapMsg === "string" && trapMsg.length > 0) {
+              hasTrapRef.current = true;
+              xtermRef.current?.writeln(
+                `\r\n\x1b[31m[wasm trap] ${trapMsg}\x1b[0m`
+              );
+            }
+
+            console.log("[Terminal] exit frame received, code:", msg.code, "trap:", trapMsg);
             xtermRef.current?.writeln(
               `\r\n\x1b[38;5;240m└─ process exited with code \x1b[${
                 msg.code === 0 ? "32" : "31"
@@ -332,10 +353,16 @@ export default function Terminal({ sessionId, running, wasmB64, onEnd }: Termina
         onEnd?.("error");
       } else {
         // Normal close — the exit frame was already written by onmessage.
-        // Pass the VFS snapshot (captured in the exit frame handler) to the
-        // parent so it can populate the file tree without the VFS HTTP API.
-        onEnd?.("complete", vfsSnapshotRef.current);
+        if (hasTrapRef.current) {
+          // WASM trap: surface as "error" so the parent shows "crashed" state.
+          onEnd?.("error");
+        } else {
+          // Clean exit — pass VFS snapshot and exit code to the parent.
+          onEnd?.("complete", vfsSnapshotRef.current, exitCodeRef.current ?? 0);
+        }
         vfsSnapshotRef.current = undefined; // reset for next session
+        exitCodeRef.current    = undefined;
+        hasTrapRef.current     = false;
       }
     };
 

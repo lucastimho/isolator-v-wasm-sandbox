@@ -102,6 +102,10 @@ pub struct ExecuteResponse {
     pub elapsed_ms:     u64,
     /// Snapshot of all files written in the VFS (path → Base64).
     pub vfs_files:      HashMap<String, String>,
+    /// If the guest triggered a WASM trap (e.g. `unreachable`, OOB memory),
+    /// this field holds the trap description.  Absent on clean `proc_exit`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trap:           Option<String>,
 }
 
 /// Uniform JSON error envelope.
@@ -219,6 +223,7 @@ async fn handle_execute(
                 stderr,
                 elapsed_ms: result.elapsed.as_millis() as u64,
                 vfs_files,
+                trap:       result.trap_message,
             };
 
             info!(

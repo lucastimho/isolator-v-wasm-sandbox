@@ -209,6 +209,11 @@ const DataGrid = memo(function DataGrid({ raw }: { raw: string }) {
 
 const CHART_COLORS = ["#6366f1", "#22c55e", "#f59e0b", "#ef4444", "#38bdf8", "#c084fc"];
 
+/** Format a number for a Y-axis tick: no decimals if it's a whole number. */
+function fmtTick(v: number): string {
+  return Number.isInteger(v) ? String(v) : v.toFixed(1);
+}
+
 const ChartView = memo(function ChartView({ raw }: { raw: string }) {
   const data = useMemo(() => {
     try { return JSON.parse(raw) as Record<string, unknown>; } catch { return null; }
@@ -225,44 +230,101 @@ const ChartView = memo(function ChartView({ raw }: { raw: string }) {
     );
   }
 
-  const labels  = data.labels as string[];
-  const series  = data.series as { name: string; data: number[] }[];
-  const maxVals = series.map((s) => Math.max(...s.data));
-  const globalMax = Math.max(...maxVals, 1);
+  const labels = data.labels as string[];
+  const series = data.series as { name: string; data: number[] }[];
 
   return (
     <div className="flex h-full flex-col">
       <PreviewToolbar title="Timeseries Chart" />
-      <div className="flex-1 overflow-auto p-4 space-y-6">
+      <div className="flex-1 overflow-auto px-4 py-5 space-y-8">
         {series.map((s, si) => {
           const color  = CHART_COLORS[si % CHART_COLORS.length];
+          const serMin = Math.min(...s.data);
           const serMax = Math.max(...s.data, 1);
+
+          // Smart baseline: when the minimum value is more than 20 % of the
+          // maximum, raising the floor to ~80 % of the minimum expands the
+          // visible data range and makes variation much easier to read.
+          // Always clamp to ≥ 0 so bars never extend below the axis.
+          const baseline =
+            serMin > serMax * 0.2 ? Math.max(0, Math.floor(serMin * 0.8)) : 0;
+          const range = Math.max(serMax - baseline, 1);
+
+          // Three evenly-spaced Y-axis ticks: top (max), midpoint, bottom (baseline).
+          const midTick = baseline + range / 2;
+
           return (
-            <div key={s.name} className="space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
-                <span className="font-mono text-[11px] text-[var(--color-text-secondary)]">{s.name}</span>
+            <div key={s.name} className="space-y-1">
+              {/* Series label */}
+              <div className="flex items-center gap-2 mb-2">
+                <span
+                  className="h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: color }}
+                />
+                <span className="font-mono text-[11px] font-semibold text-[var(--color-text-secondary)]">
+                  {s.name}
+                </span>
               </div>
-              <div className="flex h-20 items-end gap-0.5">
-                {s.data.map((v, i) => (
-                  <div key={i} className="group relative flex flex-1 flex-col items-center justify-end">
-                    <div
-                      className="w-full rounded-t-sm transition-all"
-                      style={{
-                        height:          `${(v / serMax) * 100}%`,
-                        backgroundColor: color + "cc",
-                        minHeight:       "2px",
-                      }}
-                    />
-                    <span className="absolute -top-4 hidden text-[9px] text-[var(--color-text-muted)] group-hover:block">
-                      {v}
-                    </span>
+
+              {/* Y-axis + bars */}
+              <div className="flex items-stretch gap-2">
+                {/* Y-axis tick labels — align with top / mid / bottom of bar area */}
+                <div className="flex w-10 shrink-0 flex-col justify-between pb-px text-right">
+                  <span className="font-mono text-[9px] leading-none text-[var(--color-text-muted)]">
+                    {fmtTick(serMax)}
+                  </span>
+                  <span className="font-mono text-[9px] leading-none text-[var(--color-text-muted)]">
+                    {fmtTick(midTick)}
+                  </span>
+                  <span className="font-mono text-[9px] leading-none text-[var(--color-text-muted)]">
+                    {fmtTick(baseline)}
+                  </span>
+                </div>
+
+                {/* Bar plot area */}
+                <div className="relative min-w-0 flex-1">
+                  {/* Horizontal grid lines at 100 %, 50 %, 0 % */}
+                  <div className="pointer-events-none absolute inset-0">
+                    <div className="absolute top-0    left-0 right-0 h-px bg-[var(--color-border)] opacity-40" />
+                    <div className="absolute top-1/2  left-0 right-0 h-px bg-[var(--color-border)] opacity-25" />
+                    <div className="absolute bottom-0 left-0 right-0 h-px bg-[var(--color-border)] opacity-40" />
                   </div>
-                ))}
+
+                  {/* Bars */}
+                  <div className="flex h-36 items-end gap-px">
+                    {s.data.map((v, i) => {
+                      const pct = ((v - baseline) / range) * 100;
+                      return (
+                        <div
+                          key={i}
+                          className="group relative flex h-full flex-1 flex-col items-center justify-end"
+                        >
+                          {/* Hover value label */}
+                          <span className="pointer-events-none absolute -top-5 left-1/2 hidden -translate-x-1/2 whitespace-nowrap rounded bg-[var(--color-elevated)] px-1 py-px font-mono text-[9px] font-semibold text-[var(--color-text-primary)] shadow group-hover:block">
+                            {v}
+                          </span>
+                          <div
+                            className="w-full rounded-t-sm transition-all duration-150 group-hover:brightness-125"
+                            style={{
+                              height:          `${Math.max(pct, 0)}%`,
+                              backgroundColor: color + "cc",
+                              minHeight:       "2px",
+                            }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
-              <div className="flex justify-between">
+
+              {/* X-axis labels — indent to align with bar area */}
+              <div className="flex pl-12">
                 {labels.map((l, i) => (
-                  <span key={i} className="flex-1 text-center font-mono text-[9px] text-[var(--color-text-muted)]">
+                  <span
+                    key={i}
+                    className="flex-1 text-center font-mono text-[9px] text-[var(--color-text-muted)]"
+                  >
                     {l}
                   </span>
                 ))}

@@ -32,6 +32,9 @@ type ExecuteResponse struct {
 	ExitCode    int32
 	ElapsedMS   uint64
 	VFSSnapshot map[string][]byte
+	// TrapMessage is non-nil when the guest triggered a WASM trap
+	// (e.g. `unreachable`, OOB memory access) rather than calling proc_exit.
+	TrapMessage *string
 }
 
 // HealthStatus reports whether a worker is alive and how many warm slots it has.

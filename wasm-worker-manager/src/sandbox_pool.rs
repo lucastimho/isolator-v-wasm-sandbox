@@ -130,6 +130,9 @@ pub struct ExecutionResult {
     pub elapsed:       Duration,
     /// Snapshot of VFS files at end of execution (optional; useful for tests).
     pub vfs_snapshot:  std::collections::BTreeMap<String, Vec<u8>>,
+    /// If the guest triggered a WASM trap (e.g. `unreachable`, OOB memory access)
+    /// this holds the trap description string.  `None` for clean `proc_exit` exits.
+    pub trap_message:  Option<String>,
 }
 
 // ─── Per-sandbox store data ───────────────────────────────────────────────────
@@ -920,8 +923,6 @@ impl SandboxPool {
             .context("instantiate failed")
             .map_err(SandboxError::Trap);
 
-        let exit_code = slot.store.data().exit_code.unwrap_or(0);
-
         let exec_result = match exec_result {
             Ok(instance) => {
                 let start_fn = instance
@@ -943,8 +944,16 @@ impl SandboxPool {
                     Ok(Ok(())) => Ok(()),
                     // ── WASM trapped ────────────────────────────────────────
                     Ok(Err(e)) => {
-                        let msg = e.to_string();
-                        if msg.starts_with("proc_exit(") {
+                        // The proc_exit() host function always writes exit_code
+                        // into the store *before* returning the bail error.
+                        // Checking exit_code.is_some() is therefore more reliable
+                        // than matching the error message string, which wasmtime
+                        // wraps with backtrace info (making starts_with("proc_exit(")
+                        // fail on some wasmtime versions).
+                        let is_proc_exit = slot.store.data().exit_code.is_some()
+                            || e.to_string().starts_with("proc_exit(");
+
+                        if is_proc_exit {
                             // Clean guest exit via proc_exit() — the exit code
                             // was already stored in slot.store.data().
                             Ok(())
@@ -955,6 +964,7 @@ impl SandboxPool {
                             // Epoch deadline fired — CPU quota exceeded.
                             Err(SandboxError::CpuQuotaExceeded { limit_ms: quota_ms })
                         } else {
+                            // Genuine WASM trap (unreachable, OOB memory, etc.)
                             Err(SandboxError::Trap(e))
                         }
                     }
@@ -962,6 +972,10 @@ impl SandboxPool {
             }
             Err(e) => Err(e),
         };
+
+        // Read exit_code *after* _start has run so proc_exit() has had a
+        // chance to store its value in slot.store.data().exit_code.
+        let exit_code = slot.store.data().exit_code.unwrap_or(0);
 
         let elapsed     = start.elapsed();
         let stdout      = vfs.stdout.drain();
@@ -981,6 +995,12 @@ impl SandboxPool {
             self.warm_slots.lock().push_back(s);
         }
 
+        // Capture the trap message (if any) before consuming exec_result.
+        let trap_message: Option<String> = match &exec_result {
+            Err(SandboxError::Trap(e)) => Some(e.to_string()),
+            _ => None,
+        };
+
         match exec_result {
             Ok(()) | Err(SandboxError::Trap(_)) => {} // treat trap as exit
             Err(e @ SandboxError::CpuQuotaExceeded { .. }) => return Err(e),
@@ -994,6 +1014,7 @@ impl SandboxPool {
             exit_code,
             elapsed,
             vfs_snapshot: vfs_snap,
+            trap_message,
         })
     }
 
