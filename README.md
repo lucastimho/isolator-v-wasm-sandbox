@@ -478,7 +478,7 @@ graph LR
 ### Build
 
 ```bash
-git clone https://github.com/your-org/isolator-v
+git clone https://github.com/lucastimho/isolator-v
 cd isolator-v/wasm-worker-manager
 
 # Development build (opt-level 1, fast compile, debuggable)
