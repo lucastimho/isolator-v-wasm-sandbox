@@ -469,69 +469,268 @@ graph LR
 
 ## Getting Started
 
+The project is made up of three services that must be started in order. Each runs independently in its own terminal.
+
+```mermaid
+graph LR
+    FE["Frontend\nNext.js :3000"]
+    ORC["Orchestrator\nGo :8080"]
+    WM["WASM Worker Manager\nRust :3001"]
+    RD[("Redis\n:6379")]
+
+    FE -- "REST /api/v1/*\n(proxy rewrite)" --> ORC
+    FE -- "WebSocket ws://\n(direct)" --> ORC
+    ORC -- "POST /execute\nGET /health" --> WM
+    ORC -- "rate limiting\ntoken bucket" --> RD
+```
+
+| Service | Language | Port | Directory |
+|---|---|---|---|
+| WASM Worker Manager | Rust | `3001` | `wasm-worker-manager/` |
+| Orchestrator | Go | `8080` | `orchestrator/` |
+| Frontend | TypeScript / Next.js | `3000` | `frontend/` |
+
+---
+
 ### Prerequisites
 
-- Rust 1.78+ (`rustup update stable`)
-- Cargo
-- Linux (required for seccomp BPF); macOS supported with seccomp disabled
+Make sure the following tools are installed before you begin:
 
-### Build
+| Tool | Version | Install |
+|---|---|---|
+| Rust + Cargo | 1.78+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| Go | 1.22+ | https://go.dev/dl |
+| Node.js + npm | 20+ | https://nodejs.org |
+| Docker (for Redis) | any | https://docs.docker.com/get-docker |
+
+> **macOS note:** seccomp BPF (Layer 1 syscall filtering) is Linux-only. The WASM Worker Manager runs on macOS with seccomp gracefully disabled — all other security layers remain active.
+
+---
+
+### Step 1 — Clone the Repository
 
 ```bash
 git clone https://github.com/lucastimho/isolator-v-wasm-sandbox.git
 cd isolator-v-wasm-sandbox
-
-# Development build (opt-level 1, fast compile, debuggable)
-cargo build
-
-# Release build (LTO, opt-level 3, panic=abort)
-cargo build --release
 ```
+
+---
+
+### Step 2 — Start Redis
+
+The orchestrator requires Redis for rate limiting. A Docker Compose file is included:
+
+```bash
+cd orchestrator
+docker compose up -d
+```
+
+Verify Redis is running:
+
+```bash
+docker compose ps
+# redis   running   0.0.0.0:6379->6379/tcp
+```
+
+---
+
+### Step 3 — Start the WASM Worker Manager (Rust)
+
+Open a new terminal tab.
+
+```bash
+cd wasm-worker-manager
+
+# Development (fast compile, debug symbols)
+LISTEN_ADDR=0.0.0.0:3001 cargo run
+
+# Production (LTO, opt-level 3, panic=abort)
+LISTEN_ADDR=0.0.0.0:3001 cargo run --release
+```
+
+You should see output like:
+
+```
+{"level":"INFO","msg":"WASM Worker Manager starting","pool_size":50,...}
+{"level":"INFO","msg":"Pool initialised — starting HTTP server","warm_slots":50}
+```
+
+Confirm it is healthy:
+
+```bash
+curl http://localhost:3001/health
+# {"status":"ok","warm_slots":50}
+```
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `LISTEN_ADDR` | `0.0.0.0:3000` | Bind address (use `3001` to avoid conflict with Next.js) |
+| `RUST_LOG` | `info` | Log level — `debug` for verbose per-request traces |
+
+---
+
+### Step 4 — Start the Orchestrator (Go)
+
+Open a new terminal tab.
+
+```bash
+cd orchestrator
+
+# Copy the example env file (already pre-configured for local dev)
+cp .env.example .env
+
+# Build and run
+make run
+
+# Or without make:
+go run ./cmd/server
+```
+
+You should see:
+
+```
+{"level":"info","msg":"isolator-v orchestrator starting","port":"8080","workers":["http://localhost:3001"],...}
+{"level":"info","msg":"orchestrator listening","addr":":8080"}
+```
+
+**Environment variables (`.env`):**
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `8080` | Orchestrator HTTP listen port |
+| `WORKER_ADDRS` | `http://localhost:3001` | Comma-separated WASM Worker Manager addresses |
+| `POOL_CAPACITY` | `50` | Warm worker connection slots |
+| `EXEC_TIMEOUT_MS` | `30000` | Per-request hard deadline (ms) |
+| `REDIS_URL` | `redis://localhost:6379` | Redis URL for rate limiting |
+| `RATE_LIMIT_RPS` | `100` | Sustained requests per second per client IP |
+| `RATE_LIMIT_BURST` | `200` | Maximum burst size |
+| `JWT_SECRET` | _(blank)_ | Leave blank to disable auth in local dev |
+| `LIBSQL_URL` | _(blank)_ | Optional: LibSQL/Turso URL for VFS snapshot persistence |
+| `LOG_LEVEL` | `info` | Log level — `debug` for per-stage execution traces |
+
+---
+
+### Step 5 — Start the Frontend (Next.js)
+
+Open a new terminal tab.
+
+```bash
+cd frontend
+
+# Install dependencies (first time only)
+npm install
+
+# Start the dev server with Turbopack
+npm run dev
+```
+
+You should see:
+
+```
+▲ Next.js 15.1.0 (Turbopack)
+- Local:   http://localhost:3000
+- Ready in 1.2s
+```
+
+Open **http://localhost:3000** in your browser.
+
+**Environment variables (`.env.local`):**
+
+| Variable | Default | Description |
+|---|---|---|
+| `NEXT_PUBLIC_ORCHESTRATOR_URL` | `http://localhost:8080` | Direct URL for WebSocket connections to the orchestrator |
+
+> **How routing works:** REST calls from the frontend go through `/api/v1/*` which Next.js proxies to the orchestrator at `:8080`. WebSocket connections are made directly to `NEXT_PUBLIC_ORCHESTRATOR_URL` because Next.js cannot proxy WebSocket upgrades.
+
+---
+
+### All Services Running
+
+Once all three are up, your terminal layout should look like this:
+
+```
+Terminal 1 (Redis)         Terminal 2 (Rust worker)      Terminal 3 (Go orchestrator)   Terminal 4 (Next.js)
+─────────────────────────  ──────────────────────────────  ──────────────────────────────  ─────────────────────
+docker compose up -d       LISTEN_ADDR=0.0.0.0:3001        go run ./cmd/server             npm run dev
+                           cargo run --release
+Redis :6379 ✓              WASM Worker :3001 ✓             Orchestrator :8080 ✓            Frontend :3000 ✓
+```
+
+Quick health check across all services:
+
+```bash
+curl http://localhost:3001/health   # WASM Worker Manager
+curl http://localhost:8080/health   # Orchestrator
+# Frontend: open http://localhost:3000 in browser
+```
+
+---
+
+### (Optional) Build the WASM Demo Programs
+
+The frontend ships with pre-built demo WASM binaries (hello, counter, fibonacci, primes, files). To rebuild them from source after making changes:
+
+```bash
+cd wasm-demos
+
+# Adds the wasm32-wasip1 target if not already installed, then compiles
+./build.sh
+```
+
+The script prints base64 strings at the end. Paste them into `frontend/components/ExecutionConsole.tsx` to replace the existing demo payloads (the script tells you exactly which constants to update).
+
+Optionally install `wasm-opt` for binary size optimisation:
+
+```bash
+# macOS
+brew install binaryen
+
+# Then re-run the build script — it will apply -Oz optimisation automatically
+./build.sh
+```
+
+---
 
 ### Run Tests
 
 ```bash
-# All tests with output
+# WASM Worker Manager (Rust)
+cd wasm-worker-manager
 cargo test -- --nocapture
 
-# Specific module
+# Target a specific module
 cargo test backpressure -- --nocapture
 cargo test pii_scrubber -- --nocapture
+
+# Orchestrator (Go)
+cd orchestrator
+make test
+# or: go test ./... -race -timeout 60s
 ```
 
-### Run the Server
-
-```bash
-# Default: listens on 0.0.0.0:3000
-cargo run --release
-
-# Custom listen address
-LISTEN_ADDR=127.0.0.1:8080 cargo run --release
-
-# Log level (default: info)
-RUST_LOG=debug cargo run
-```
-
-### Send a Test Execution
-
-```bash
-# Encode a no-op WASM module
-NOOP=$(printf '\x00\x61\x73\x6d\x01\x00\x00\x00\x01\x04\x01\x60\x00\x00\x03\x02\x01\x00\x07\x09\x01\x06\x5f\x73\x74\x61\x72\x74\x00\x00\x0a\x04\x01\x02\x00\x0b' | base64)
-
-curl -s -X POST http://localhost:3000/execute \
-  -H "Content-Type: application/json" \
-  -d "{\"wasm_b64\":\"$NOOP\",\"label\":\"test\"}" | jq .
-```
+---
 
 ### Benchmark
 
 ```bash
 # Install hey: https://github.com/rakyll/hey
-hey -n 500 -c 50 \
-    -m POST \
+# macOS: brew install hey
+
+NOOP=$(printf '\x00\x61\x73\x6d\x01\x00\x00\x00\x01\x04\x01\x60\x00\x00\x03\x02\x01\x00\x07\x09\x01\x06\x5f\x73\x74\x61\x72\x74\x00\x00\x0a\x04\x01\x02\x00\x0b' | base64)
+
+# Hit the WASM Worker Manager directly
+hey -n 500 -c 50 -m POST \
     -H "Content-Type: application/json" \
     -d "{\"wasm_b64\":\"$NOOP\",\"label\":\"bench\"}" \
-    http://localhost:3000/execute
+    http://localhost:3001/execute
+
+# Hit the full stack through the Orchestrator
+hey -n 500 -c 50 -m POST \
+    -H "Content-Type: application/json" \
+    -d "{\"wasm_b64\":\"$NOOP\",\"label\":\"bench\"}" \
+    http://localhost:8080/execute
 ```
 
 ---
