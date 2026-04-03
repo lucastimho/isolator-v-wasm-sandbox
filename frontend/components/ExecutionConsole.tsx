@@ -18,6 +18,7 @@ import {
   HelpCircle,
   CheckCircle2,
   XCircle,
+  Loader2,
   ArrowRight,
   Cpu,
   MemoryStick,
@@ -31,6 +32,7 @@ import ComponentRegistry from "./ComponentRegistry";
 import Tooltip from "./Tooltip";
 import HelpOverlay from "./HelpOverlay";
 import StatusBar from "./StatusBar";
+import ThemeToggle from "./ThemeToggle";
 
 // Xterm.js uses browser APIs — always load client-side only
 const Terminal = dynamic(() => import("./Terminal"), { ssr: false });
@@ -427,6 +429,118 @@ const CSV_WASM_B64 =
   "V2VzdCwzNzQ2MCwzOTMKRGVjLE5vcnRoLDQ0OTkzLDQwOQpEZWMsU291dGgsOTQ5Mzks" +
   "ODYKRGVjLEVhc3QsODk4NDAsMzc1CkRlYyxXZXN0LDMyNDMxLDMyMwo=";
 
+/** markdown — writes /workspace/readme.md for the MarkdownViewer previewer. */
+const MARKDOWN_WASM_B64 =
+  "AGFzbQEAAAABIgVgCX9/f39/fn5/fwF/YAR/f39/AX9gAX8Bf2ABfwBgAAACiwEEFndhc2lfc25hcHNo" +
+  "b3RfcHJldmlldzEJcGF0aF9vcGVuAAAWd2FzaV9zbmFwc2hvdF9wcmV2aWV3MQhmZF93cml0ZQABFndh" +
+  "c2lfc25hcHNob3RfcHJldmlldzEIZmRfY2xvc2UAAhZ3YXNpX3NuYXBzaG90X3ByZXZpZXcxCXByb2Nf" +
+  "ZXhpdAADAwIBBAUDAQABBxMCBm1lbW9yeQIABl9zdGFydAAECl4BXABBAEEQNgIAQQRB7wA2AgBBAUEA" +
+  "QQFBCBABGkEDQQBB/wBBFEEJQn9Cf0EAQQwQABpBAEGTATYCAEEEQfkINgIAQQwoAgBBAEEBQQgQARpB" +
+  "DCgCABACGkEAEAMLC4MKAQBBEAv8CU1hcmtkb3duIFByZXZpZXcgRGVtbwo9PT09PT09PT09PT09PT09" +
+  "PT09PT0KICBXcml0aW5nIC93b3Jrc3BhY2UvcmVhZG1lLm1kIC4uLgogIFByZXZpZXcgaXQgaW4gdGhl" +
+  "IGxlZnQgcGFuZWwuCi93b3Jrc3BhY2UvcmVhZG1lLm1kIyBJc29sYXRvci1WIFNhbmRib3gKCkEgKipX" +
+  "ZWJBc3NlbWJseSoqIGV4ZWN1dGlvbiBlbnZpcm9ubWVudCB3aXRoIHJlYWwtdGltZSB0ZWxlbWV0cnku" +
+  "CgojIyBGZWF0dXJlcwoKLSBJc29sYXRlZCBXQVNNIGV4ZWN1dGlvbiB2aWEgX3dhc210aW1lXyAyNQot" +
+  "IFZpcnR1YWwgZmlsZXN5c3RlbSAoVkZTKSB3aXRoIGlubGluZSBzbmFwc2hvdCBkZWxpdmVyeQotIFJp" +
+  "Y2ggZmlsZSBwcmV2aWV3ZXJzOiBDU1YsIEpTT04gY2hhcnRzLCBNYXJrZG93biwgSW1hZ2VzCi0gRGFy" +
+  "ayAvIGxpZ2h0IG1vZGUgdG9nZ2xlCi0gUmVzaXphYmxlIHBhbmVsIGxheW91dAoKIyMgQ29kZSBFeGFt" +
+  "cGxlCgpgYGBydXN0CmZuIG1haW4oKSB7CiAgICBwcmludGxuISgiSGVsbG8gZnJvbSBJc29sYXRvci1W" +
+  "IFdBU00hIik7Cn0KYGBgCgojIyBBcmNoaXRlY3R1cmUKClRoZSBleGVjdXRpb24gcGlwZWxpbmU6Cgog" +
+  "ICAgQnJvd3NlciDihpIgV2ViU29ja2V0IOKGkiBHbyBPcmNoZXN0cmF0b3Ig4oaSIEhUVFAg4oaSIFJ1" +
+  "c3Qgd2FzbS13b3JrZXItbWFuYWdlciDihpIgd2FzbXRpbWUKCiMjIFN0YXR1cyBUYWJsZQoKfCBDb21w" +
+  "b25lbnQgICAgICB8IFN0YXR1cyAgfCBOb3RlcyAgICAgICAgICAgICAgICAgICAgICAgICB8CnwtLS0t" +
+  "LS0tLS0tLS0tLS0tfC0tLS0tLS0tLXwtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tfAp8IE9y" +
+  "Y2hlc3RyYXRvciAgIHwgUnVubmluZyB8IEdvLCBXZWJTb2NrZXQgKyBIVFRQIEFQSSAgICAgIHwKfCBX" +
+  "QVNNIFdvcmtlciAgICB8IFJ1bm5pbmcgfCBSdXN0ICsgd2FzbXRpbWUgMjUuMCAgICAgICAgICB8Cnwg" +
+  "VkZTIFNuYXBzaG90ICAgfCBJbmxpbmUgIHwgQmFzZTY0IGluIFdTIGV4aXQgZnJhbWUgICAgICAgfAp8" +
+  "IFByZXZpZXdlciAgICAgIHwgQWN0aXZlICB8IFRoaXMgZmlsZSEgICAgICAgICAgICAgICAgICAgIHwK" +
+  "CiMjIEJsb2NrcXVvdGUKCj4gKipOb3RlOioqIFRoaXMgZmlsZSB3YXMgd3JpdHRlbiBieSBhIGhhbmQt" +
+  "YXNzZW1ibGVkIFdBU00gYmluYXJ5Cj4gYW5kIGRlbGl2ZXJlZCBpbmxpbmUgdmlhIHRoZSBXZWJTb2Nr" +
+  "ZXQgZXhpdCBmcmFtZSDigJQgbm8gZGF0YWJhc2UgcmVxdWlyZWQuCgotLS0KCl9Jc29sYXRvci1WIOKA" +
+  "lCBleGVjdXRpb24gc2FuZGJveCByZXNlYXJjaCBwcmV2aWV3Xwo=";
+
+/** svg — writes /workspace/diagram.svg (architecture diagram) for the ImageViewer. */
+const SVG_WASM_B64 =
+  "AGFzbQEAAAABIgVgCX9/f39/fn5/fwF/YAR/f39/AX9gAX8Bf2ABfwBgAAACiwEEFndhc2lfc25hcHNo" +
+  "b3RfcHJldmlldzEJcGF0aF9vcGVuAAAWd2FzaV9zbmFwc2hvdF9wcmV2aWV3MQhmZF93cml0ZQABFndh" +
+  "c2lfc25hcHNob3RfcHJldmlldzEIZmRfY2xvc2UAAhZ3YXNpX3NuYXBzaG90X3ByZXZpZXcxCXByb2Nf" +
+  "ZXhpdAADAwIBBAUDAQABBxMCBm1lbW9yeQIABl9zdGFydAAECl4BXABBAEEQNgIAQQRB4wA2AgBBAUEA" +
+  "QQFBCBABGkEDQQBB8wBBFkEJQn9Cf0EAQQwQABpBAEGJATYCAEEEQb0hNgIAQQwoAgBBAEEBQQgQARpB" +
+  "DCgCABACGkEAEAMLC70iAQBBEAu2IlNWRyBJbWFnZSBEZW1vCj09PT09PT09PT09PT09CiAgV3JpdGlu" +
+  "ZyAvd29ya3NwYWNlL2RpYWdyYW0uc3ZnIC4uLgogIFByZXZpZXcgaXQgaW4gdGhlIGxlZnQgcGFuZWwu" +
+  "Ci93b3Jrc3BhY2UvZGlhZ3JhbS5zdmc8c3ZnIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2" +
+  "ZyIgdmlld0JveD0iMCAwIDQ4MCAzMjAiIHdpZHRoPSI0ODAiIGhlaWdodD0iMzIwIj4KICA8ZGVmcz4K" +
+  "ICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iYmdHcmFkIiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+" +
+  "CiAgICAgIDxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9IiMwZjBmMTIiLz4KICAgICAgPHN0b3Ag" +
+  "b2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjMDgwODBhIi8+CiAgICA8L2xpbmVhckdyYWRpZW50Pgog" +
+  "ICAgPG1hcmtlciBpZD0iYXJyQmx1ZSIgbWFya2VyV2lkdGg9IjYiIG1hcmtlckhlaWdodD0iNiIgcmVm" +
+  "WD0iNSIgcmVmWT0iMyIgb3JpZW50PSJhdXRvIj4KICAgICAgPHBhdGggZD0iTTAsMCBMMCw2IEw2LDMg" +
+  "WiIgZmlsbD0iIzYzNjZmMSIvPgogICAgPC9tYXJrZXI+CiAgICA8bWFya2VyIGlkPSJhcnJHcmVlbiIg" +
+  "bWFya2VyV2lkdGg9IjYiIG1hcmtlckhlaWdodD0iNiIgcmVmWD0iNSIgcmVmWT0iMyIgb3JpZW50PSJh" +
+  "dXRvIj4KICAgICAgPHBhdGggZD0iTTAsMCBMMCw2IEw2LDMgWiIgZmlsbD0iIzIyYzU1ZSIvPgogICAg" +
+  "PC9tYXJrZXI+CiAgPC9kZWZzPgoKICA8IS0tIEJhY2tncm91bmQgLS0+CiAgPHJlY3Qgd2lkdGg9IjQ4" +
+  "MCIgaGVpZ2h0PSIzMjAiIGZpbGw9InVybCgjYmdHcmFkKSIgcng9IjgiLz4KCiAgPCEtLSBUaXRsZSAt" +
+  "LT4KICA8dGV4dCB4PSIyNDAiIHk9IjM2IiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9" +
+  "IjE1IiBmaWxsPSIjZThlOGYwIgogICAgICAgIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtd2VpZ2h0" +
+  "PSJib2xkIj5Jc29sYXRvci1WIFBpcGVsaW5lPC90ZXh0PgogIDxsaW5lIHgxPSI2MCIgeTE9IjQ2IiB4" +
+  "Mj0iNDIwIiB5Mj0iNDYiIHN0cm9rZT0iIzYzNjZmMSIgc3Ryb2tlLXdpZHRoPSIxIiBvcGFjaXR5PSIw" +
+  "LjQiLz4KCiAgPCEtLSBCcm93c2VyIGJveCAtLT4KICA8cmVjdCB4PSIyMCIgeT0iNzAiIHdpZHRoPSI4" +
+  "MCIgaGVpZ2h0PSI0MCIgcng9IjYiIGZpbGw9IiMxNjE2MWMiIHN0cm9rZT0iIzYzNjZmMSIgc3Ryb2tl" +
+  "LXdpZHRoPSIxLjUiLz4KICA8dGV4dCB4PSI2MCIgeT0iOTUiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2Ui" +
+  "IGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiNlOGU4ZjAiIHRleHQtYW5jaG9yPSJtaWRkbGUiPkJyb3dzZXI8" +
+  "L3RleHQ+CgogIDwhLS0gT3JjaGVzdHJhdG9yIGJveCAtLT4KICA8cmVjdCB4PSIxNDAiIHk9IjcwIiB3" +
+  "aWR0aD0iMTAwIiBoZWlnaHQ9IjQwIiByeD0iNiIgZmlsbD0iIzE2MTYxYyIgc3Ryb2tlPSIjNjM2NmYx" +
+  "IiBzdHJva2Utd2lkdGg9IjEuNSIvPgogIDx0ZXh0IHg9IjE5MCIgeT0iODgiIGZvbnQtZmFtaWx5PSJt" +
+  "b25vc3BhY2UiIGZvbnQtc2l6ZT0iMTAiIGZpbGw9IiNlOGU4ZjAiIHRleHQtYW5jaG9yPSJtaWRkbGUi" +
+  "Pk9yY2hlc3RyYXRvcjwvdGV4dD4KICA8dGV4dCB4PSIxOTAiIHk9IjEwMSIgZm9udC1mYW1pbHk9Im1v" +
+  "bm9zcGFjZSIgZm9udC1zaXplPSI5IiBmaWxsPSIjNzA3MGEwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj4o" +
+  "R28pPC90ZXh0PgoKICA8IS0tIFdvcmtlciBib3ggLS0+CiAgPHJlY3QgeD0iMjgwIiB5PSI3MCIgd2lk" +
+  "dGg9IjEwMCIgaGVpZ2h0PSI0MCIgcng9IjYiIGZpbGw9IiMxNjE2MWMiIHN0cm9rZT0iIzYzNjZmMSIg" +
+  "c3Ryb2tlLXdpZHRoPSIxLjUiLz4KICA8dGV4dCB4PSIzMzAiIHk9Ijg4IiBmb250LWZhbWlseT0ibW9u" +
+  "b3NwYWNlIiBmb250LXNpemU9IjEwIiBmaWxsPSIjZThlOGYwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj53" +
+  "YXNtLXdvcmtlcjwvdGV4dD4KICA8dGV4dCB4PSIzMzAiIHk9IjEwMSIgZm9udC1mYW1pbHk9Im1vbm9z" +
+  "cGFjZSIgZm9udC1zaXplPSI5IiBmaWxsPSIjNzA3MGEwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj4oUnVz" +
+  "dCk8L3RleHQ+CgogIDwhLS0gd2FzbXRpbWUgYm94IC0tPgogIDxyZWN0IHg9IjQwMCIgeT0iNzAiIHdp" +
+  "ZHRoPSI2NSIgaGVpZ2h0PSI0MCIgcng9IjYiIGZpbGw9IiMxNjE2MWMiIHN0cm9rZT0iIzhiNWNmNiIg" +
+  "c3Ryb2tlLXdpZHRoPSIxLjUiLz4KICA8dGV4dCB4PSI0MzIiIHk9Ijg4IiBmb250LWZhbWlseT0ibW9u" +
+  "b3NwYWNlIiBmb250LXNpemU9IjEwIiBmaWxsPSIjYzA4NGZjIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj53" +
+  "YXNtdGltZTwvdGV4dD4KICA8dGV4dCB4PSI0MzIiIHk9IjEwMSIgZm9udC1mYW1pbHk9Im1vbm9zcGFj" +
+  "ZSIgZm9udC1zaXplPSI5IiBmaWxsPSIjNzA3MGEwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj4yNS4wPC90" +
+  "ZXh0PgoKICA8IS0tIFRvcCByb3cgYXJyb3dzIC0tPgogIDxsaW5lIHgxPSIxMDAiIHkxPSI5MCIgeDI9" +
+  "IjEzOCIgeTI9IjkwIiBzdHJva2U9IiM2MzY2ZjEiIHN0cm9rZS13aWR0aD0iMS41IiBtYXJrZXItZW5k" +
+  "PSJ1cmwoI2FyckJsdWUpIi8+CiAgPGxpbmUgeDE9IjI0MCIgeTE9IjkwIiB4Mj0iMjc4IiB5Mj0iOTAi" +
+  "IHN0cm9rZT0iIzYzNjZmMSIgc3Ryb2tlLXdpZHRoPSIxLjUiIG1hcmtlci1lbmQ9InVybCgjYXJyQmx1" +
+  "ZSkiLz4KICA8bGluZSB4MT0iMzgwIiB5MT0iOTAiIHgyPSIzOTciIHkyPSI5MCIgc3Ryb2tlPSIjOGI1" +
+  "Y2Y2IiBzdHJva2Utd2lkdGg9IjEuNSIgbWFya2VyLWVuZD0idXJsKCNhcnJCbHVlKSIvPgoKICA8IS0t" +
+  "IEFycm93IGxhYmVscyAtLT4KICA8dGV4dCB4PSIxMTkiIHk9Ijg0IiBmb250LWZhbWlseT0ibW9ub3Nw" +
+  "YWNlIiBmb250LXNpemU9IjgiIGZpbGw9IiM3MDcwYTAiIHRleHQtYW5jaG9yPSJtaWRkbGUiPldTPC90" +
+  "ZXh0PgogIDx0ZXh0IHg9IjI1OSIgeT0iODQiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6" +
+  "ZT0iOCIgZmlsbD0iIzcwNzBhMCIgdGV4dC1hbmNob3I9Im1pZGRsZSI+SFRUUDwvdGV4dD4KCiAgPCEt" +
+  "LSBWRlMgYm94IC0tPgogIDxyZWN0IHg9IjE0MCIgeT0iMTcwIiB3aWR0aD0iMjAwIiBoZWlnaHQ9IjUw" +
+  "IiByeD0iNiIgZmlsbD0iIzE2MTYxYyIgc3Ryb2tlPSIjMjJjNTVlIiBzdHJva2Utd2lkdGg9IjEuNSIv" +
+  "PgogIDx0ZXh0IHg9IjI0MCIgeT0iMTkyIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9" +
+  "IjExIiBmaWxsPSIjZThlOGYwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5WaXJ0dWFsIEZpbGVzeXN0ZW08" +
+  "L3RleHQ+CiAgPHRleHQgeD0iMjQwIiB5PSIyMDgiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQt" +
+  "c2l6ZT0iOSIgZmlsbD0iIzRhZGU4MCIgdGV4dC1hbmNob3I9Im1pZGRsZSI+L3dvcmtzcGFjZS8gKGlu" +
+  "bGluZSBzbmFwc2hvdCk8L3RleHQ+CgogIDwhLS0gQXJyb3cgZnJvbSB3b3JrZXIgZG93biB0byBWRlMg" +
+  "LS0+CiAgPGxpbmUgeDE9IjMzMCIgeTE9IjExMiIgeDI9IjMzMCIgeTI9IjE2MiIgc3Ryb2tlPSIjMjJj" +
+  "NTVlIiBzdHJva2Utd2lkdGg9IjEuMiIgc3Ryb2tlLWRhc2hhcnJheT0iNCwzIi8+CiAgPGxpbmUgeDE9" +
+  "IjMzMCIgeTE9IjE2MiIgeDI9IjI4MiIgeTI9IjE2OCIgc3Ryb2tlPSIjMjJjNTVlIiBzdHJva2Utd2lk" +
+  "dGg9IjEuMiIgbWFya2VyLWVuZD0idXJsKCNhcnJHcmVlbikiLz4KCiAgPCEtLSBTdGF0dXMgbGVnZW5k" +
+  "IC0tPgogIDxjaXJjbGUgY3g9IjQ0IiAgY3k9IjI1MiIgcj0iNSIgZmlsbD0iIzIyYzU1ZSIvPgogIDx0" +
+  "ZXh0IHg9IjU1IiAgeT0iMjU2IiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjEwIiBm" +
+  "aWxsPSIjZThlOGYwIj5jb21wbGV0ZTwvdGV4dD4KICA8Y2lyY2xlIGN4PSIxMzAiIGN5PSIyNTIiIHI9" +
+  "IjUiIGZpbGw9IiNlZjQ0NDQiLz4KICA8dGV4dCB4PSIxNDEiIHk9IjI1NiIgZm9udC1mYW1pbHk9Im1v" +
+  "bm9zcGFjZSIgZm9udC1zaXplPSIxMCIgZmlsbD0iI2U4ZThmMCI+Y3Jhc2hlZDwvdGV4dD4KICA8Y2ly" +
+  "Y2xlIGN4PSIyMTYiIGN5PSIyNTIiIHI9IjUiIGZpbGw9IiNmNTllMGIiLz4KICA8dGV4dCB4PSIyMjci" +
+  "IHk9IjI1NiIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMCIgZmlsbD0iI2U4ZThm" +
+  "MCI+bm9uLXplcm88L3RleHQ+CiAgPGNpcmNsZSBjeD0iMzE4IiBjeT0iMjUyIiByPSI1IiBmaWxsPSIj" +
+  "NjM2NmYxIi8+CiAgPHRleHQgeD0iMzI5IiB5PSIyNTYiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZv" +
+  "bnQtc2l6ZT0iMTAiIGZpbGw9IiNlOGU4ZjAiPnJ1bm5pbmc8L3RleHQ+CgogIDwhLS0gRm9vdGVyIC0t" +
+  "PgogIDx0ZXh0IHg9IjI0MCIgeT0iMjk4IiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9" +
+  "IjkiIGZpbGw9IiM0MDQwNjAiCiAgICAgICAgdGV4dC1hbmNob3I9Im1pZGRsZSI+V3JpdHRlbiBieSBo" +
+  "YW5kLWFzc2VtYmxlZCBXQVNNICB8ICBJc29sYXRvci1WPC90ZXh0Pgo8L3N2Zz4K";
+
 /** chart — writes /workspace/metrics.json (timeseries) for the ChartView previewer. */
 const CHART_WASM_B64 =
   "AGFzbQEAAAABIgVgCX9/f39/fn5/fwF/YAR/f39/AX9gAX8Bf2ABfwBgAAACiwEEFndh" +
@@ -468,7 +582,8 @@ const FILES_WASM_B64 =
 // ── Demo registry ─────────────────────────────────────────────────────────────
 type DemoKey =
   | "noop" | "hello" | "counter" | "fibonacci" | "primes" | "files"
-  | "exit1" | "trap" | "unicode" | "longlines" | "large" | "csv" | "chart";
+  | "exit1" | "trap" | "unicode" | "longlines" | "large" | "csv" | "chart"
+  | "markdown" | "svg";
 
 const DEMOS: Record<DemoKey, { label: string; description: string; wasmB64: string }> = {
   // ── Core demos ──────────────────────────────────────────────────────────
@@ -488,6 +603,8 @@ const DEMOS: Record<DemoKey, { label: string; description: string; wasmB64: stri
   // ── File previewer tests ──────────────────────────────────────────────────
   csv:       { label: "csv",       description: "Writes sales.csv — tests DataGrid previewer",   wasmB64: CSV_WASM_B64       },
   chart:     { label: "chart",     description: "Writes metrics.json — tests ChartView",         wasmB64: CHART_WASM_B64     },
+  markdown:  { label: "markdown",  description: "Writes readme.md — tests MarkdownViewer",       wasmB64: MARKDOWN_WASM_B64  },
+  svg:       { label: "svg",       description: "Writes diagram.svg — tests ImageViewer",        wasmB64: SVG_WASM_B64       },
 };
 
 // Detect Mac so we show ⌘ vs Ctrl in hints
@@ -511,6 +628,11 @@ export default function ExecutionConsole() {
   const [inlineVfsSnapshot, setInlineVfsSnapshot] = useState<Record<string, string>>({});
   /** Decoded content of the currently-previewed inline file, or undefined if using API. */
   const [inlineFileContent, setInlineFileContent] = useState<string | undefined>(undefined);
+  /**
+   * Raw base64 content of the currently-previewed inline binary file (images).
+   * Passed directly to ComponentRegistry as inlineB64 to avoid UTF-8 decode.
+   */
+  const [inlineFileB64, setInlineFileB64] = useState<string | undefined>(undefined);
   /** Exit code from the last completed execution (proc_exit value). */
   const [lastExitCode, setLastExitCode] = useState<number>(0);
 
@@ -537,6 +659,7 @@ export default function ExecutionConsole() {
     setInlineVfsEntries([]);
     setInlineVfsSnapshot({});
     setInlineFileContent(undefined);
+    setInlineFileB64(undefined);
     setLastExitCode(0);
   }, []);
 
@@ -547,16 +670,27 @@ export default function ExecutionConsole() {
     // its base64 content now so the previewer can render without an API call.
     const b64 = inlineVfsSnapshot[path];
     if (b64) {
-      try {
-        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-        setInlineFileContent(new TextDecoder().decode(bytes));
-      } catch {
-        // Malformed base64 — fall back to API fetch (which may also fail, but
-        // that surfaces a meaningful error message rather than a silent blank).
+      // Binary files (images) must not be UTF-8 decoded — pass raw base64
+      // to ComponentRegistry via inlineB64 so it can build a data: URL.
+      const ext = path.split(".").pop()?.toLowerCase() ?? "";
+      const isImage = ["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp"].includes(ext);
+      if (isImage) {
+        setInlineFileB64(b64);
         setInlineFileContent(undefined);
+      } else {
+        setInlineFileB64(undefined);
+        try {
+          const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+          setInlineFileContent(new TextDecoder().decode(bytes));
+        } catch {
+          // Malformed base64 — fall back to API fetch (which may also fail, but
+          // that surfaces a meaningful error message rather than a silent blank).
+          setInlineFileContent(undefined);
+        }
       }
     } else {
       setInlineFileContent(undefined);
+      setInlineFileB64(undefined);
     }
   }, [inlineVfsSnapshot]);
 
@@ -749,6 +883,13 @@ export default function ExecutionConsole() {
 
           <div className="mx-1.5 h-4 w-px bg-[var(--color-border)]" />
 
+          {/* Theme toggle */}
+          <Tooltip content="Toggle light / dark mode" side="bottom">
+            <ThemeToggle />
+          </Tooltip>
+
+          <div className="mx-1.5 h-4 w-px bg-[var(--color-border)]" />
+
           {/* Help */}
           <Tooltip content="Help & keyboard shortcuts" shortcut="?" side="bottom">
             <button
@@ -840,6 +981,7 @@ export default function ExecutionConsole() {
                           filePath={previewFile}
                           sessionId={sessionId}
                           inlineContent={inlineFileContent}
+                          inlineB64={inlineFileB64}
                         />
                       ) : (
                         <WelcomePane
@@ -1107,6 +1249,19 @@ function WelcomePane({
         <p className="font-mono text-xs text-[var(--color-danger)]">Session crashed</p>
         <p className="font-mono text-[11px] text-[var(--color-text-muted)]">
           Click <strong>Reconnect</strong> in the terminal below, or reset and start over.
+        </p>
+      </div>
+    );
+  }
+
+  if (sandboxState === "running") {
+    // Show a quiet, stable state while the session is live so there is no
+    // jarring layout shift when transitioning from "complete" → "running".
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+        <Loader2 className="h-6 w-6 animate-spin text-[var(--color-accent)]" />
+        <p className="font-mono text-[11px] text-[var(--color-text-muted)]">
+          Session running — output streams to the terminal below
         </p>
       </div>
     );

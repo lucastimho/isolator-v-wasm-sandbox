@@ -48,6 +48,32 @@
   --duration-normal: 250ms;
 }
 
+/* ── Light mode overrides ─────────────────────────────────────────────────── */
+/* Applied when <html> carries the "light" class (toggled by ThemeToggle).     */
+html.light {
+  /* Surfaces */
+  --color-void:        #f4f4f8;
+  --color-surface:     #ffffff;
+  --color-elevated:    #ededf3;
+  --color-border:      #e0e0ec;
+  --color-border-hi:   #c4c4d8;
+
+  /* Text */
+  --color-text-primary:   #1a1a2e;
+  --color-text-secondary: #52527a;
+  --color-text-muted:     #9898b8;
+
+  /* Status colours stay the same — they read equally well on both backgrounds */
+  color-scheme: light;
+}
+
+html.light ::-webkit-scrollbar-thumb {
+  background: var(--color-border-hi);
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}
+
 /* ── Base reset ───────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
 

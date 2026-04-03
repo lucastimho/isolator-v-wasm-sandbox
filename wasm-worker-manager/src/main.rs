@@ -42,10 +42,14 @@ mod error;
 mod resource_monitor;
 mod sandbox_pool;
 mod vfs;
+mod capability;
+mod seccomp_guard;
+mod pii_scrubber;
+mod backpressure;
 
 use std::{sync::Arc, time::Duration};
 
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use wasmtime::ResourceLimiter as _;
@@ -92,14 +96,31 @@ async fn main() -> anyhow::Result<()> {
 
     info!(warm_slots = pool.warm_count(), "Pool initialised — starting HTTP server");
 
+    // ── Host-level security: seccomp BPF filter ──────────────────────────────
+    // Must be activated AFTER the async runtime and listener are set up,
+    // but BEFORE accepting untrusted WASM payloads.
+    let mut host_guard = seccomp_guard::HostGuard::new();
+    if let Err(e) = host_guard.activate() {
+        // In production, this should be fatal.  During development on non-Linux
+        // hosts we warn and continue.
+        warn!(error = %e, "Host guard activation failed — running without seccomp");
+    }
+
+    // ── Back-pressure controller ─────────────────────────────────────────────
+    let bp_guard = Arc::new(backpressure::BackPressureGuard::new(config.pool_size));
+    info!("Back-pressure guard initialised (CPU threshold: 80%, pool threshold: 90%)");
+
     // ── Self-test: VFS round-trip ─────────────────────────────────────────────
     demo_vfs_usage();
 
     // ── Self-test: ResourceLimiter ────────────────────────────────────────────
     demo_resource_monitor_stats(&pool);
 
+    // ── Self-test: PII scrubber ──────────────────────────────────────────────
+    demo_pii_scrubber();
+
     // ── Axum HTTP server ─────────────────────────────────────────────────────
-    let state   = AppState::new(Arc::clone(&pool));
+    let state   = AppState::new(Arc::clone(&pool)).with_backpressure(Arc::clone(&bp_guard));
     let listen  = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".into());
 
     // Run until Ctrl-C (graceful shutdown wired inside `api::serve`).
@@ -243,6 +264,34 @@ fn demo_resource_monitor_stats(pool: &SandboxPool) {
     info!(allowed, desired_mb = 55, "ResourceLimiter: 55MB growth (should be denied)");
 
     info!("--- ResourceMonitor Demo complete ---");
+}
+
+// ─── Demo: PII Scrubber ──────────────────────────────────────────────────────
+
+fn demo_pii_scrubber() {
+    info!("--- PII Scrubber Demo ---");
+
+    let test_cases = [
+        ("Clean output", "Hello from Isolator-V WASM!"),
+        ("OpenAI key",   "Using key sk-proj-abcdefghijklmnopqrstuvwxyz123456 for request"),
+        ("AWS key",      "export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"),
+        ("Email + SSN",  "Contact: test@example.com, SSN: 123-45-6789"),
+        ("DB URI",       "DATABASE_URL=postgres://admin:password@db.internal:5432/prod"),
+    ];
+
+    for (label, input) in &test_cases {
+        let (scrubbed, stats) = pii_scrubber::PiiScrubber::scrub(input);
+        info!(
+            label,
+            redactions = stats.redactions,
+            rules      = ?stats.matched_rules,
+            input_len  = input.len(),
+            output_len = scrubbed.len(),
+            "PII scrub result"
+        );
+    }
+
+    info!("--- PII Scrubber Demo complete ---");
 }
 
 // ─── No-op WASM bytes ─────────────────────────────────────────────────────────

@@ -70,6 +70,13 @@ parking_lot = "0.12"
 # We use it for the O(1) per-process RSS probe in ResourceMonitor.
 sysinfo = "0.30"
 
+# ── Regex (PII scrubber pattern matching) ────────────────────────────────────────
+regex = "1.10"
+
+# ── Seccomp host guard (Linux-only syscall filtering) ────────────────────────────
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 # ── Utilities ────────────────────────────────────────────────────────────────────
 uuid  = { version = "1.8", features = ["v4"] }
 bytes = "1.6"

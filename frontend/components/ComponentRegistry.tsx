@@ -41,6 +41,12 @@ interface RegistryProps {
    * The string must already be decoded from base64 into UTF-8 text.
    */
   inlineContent?: string;
+  /**
+   * Raw base64 string for binary files (images) delivered inline via the
+   * WebSocket exit frame. When set, ImageViewer uses a data: URL instead of
+   * fetching from the VFS API.
+   */
+  inlineB64?: string;
 }
 
 type FetchState<T> =
@@ -51,14 +57,15 @@ type FetchState<T> =
 
 // ── File type detection ────────────────────────────────────────────────────
 
-type FileKind = "csv" | "json" | "wasm" | "log" | "image" | "raw";
+type FileKind = "csv" | "json" | "wasm" | "log" | "md" | "image" | "raw";
 
 function detectKind(path: string): FileKind {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
   if (ext === "csv")                           return "csv";
   if (["json", "plot"].includes(ext))          return "json";
   if (ext === "wasm")                          return "wasm";
-  if (["log", "txt", "md"].includes(ext))      return "log";
+  if (ext === "md")                            return "md";
+  if (["log", "txt"].includes(ext))            return "log";
   if (["png", "jpg", "jpeg", "gif", "svg", "webp"].includes(ext)) return "image";
   return "raw";
 }
@@ -463,10 +470,219 @@ const LogViewer = memo(function LogViewer({ raw }: { raw: string }) {
   );
 });
 
+// ── Markdown viewer ────────────────────────────────────────────────────────
+
+/** Render inline markdown tokens: **bold**, _italic_, `code`, [link](url) */
+function renderInline(text: string): React.ReactNode {
+  // Split on bold, inline-code, and link patterns; handle the rest as plain
+  const tokens = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/);
+  return (
+    <>
+      {tokens.map((tok, i) => {
+        if (tok.startsWith("**") && tok.endsWith("**"))
+          return <strong key={i} className="font-semibold text-[var(--color-text-primary)]">{tok.slice(2, -2)}</strong>;
+        if (tok.startsWith("`") && tok.endsWith("`"))
+          return <code key={i} className="rounded bg-[var(--color-elevated)] px-1 py-0.5 font-mono text-[0.82em] text-[var(--color-ansi-cyan)]">{tok.slice(1, -1)}</code>;
+        const lm = tok.match(/^\[(.+?)\]\((.+?)\)$/);
+        if (lm) return <a key={i} href={lm[2]} className="text-[var(--color-accent)] underline" target="_blank" rel="noopener noreferrer">{lm[1]}</a>;
+        // Handle _italic_ within plain segments
+        const italicParts = tok.split(/(_[^_]+_)/);
+        if (italicParts.length > 1)
+          return <span key={i}>{italicParts.map((p, j) =>
+            p.startsWith("_") && p.endsWith("_") && p.length > 2
+              ? <em key={j} className="italic">{p.slice(1, -1)}</em>
+              : <span key={j}>{p}</span>
+          )}</span>;
+        return <span key={i}>{tok}</span>;
+      })}
+    </>
+  );
+}
+
+const MarkdownViewer = memo(function MarkdownViewer({
+  raw,
+  title = "Markdown",
+}: {
+  raw: string;
+  title?: string;
+}) {
+  const nodes = useMemo(() => {
+    const lines = raw.split("\n");
+    const result: React.ReactNode[] = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i];
+
+      // ── Fenced code block ````lang` ... ``` ──
+      if (line.startsWith("```")) {
+        const lang = line.slice(3).trim();
+        const codeLines: string[] = [];
+        i++;
+        while (i < lines.length && !lines[i].startsWith("```")) {
+          codeLines.push(lines[i]);
+          i++;
+        }
+        result.push(
+          <div key={`code-${i}`} className="my-3 overflow-x-auto rounded border border-[var(--color-border)] bg-[var(--color-elevated)]">
+            {lang && (
+              <div className="border-b border-[var(--color-border)] px-3 py-1 font-mono text-[10px] uppercase tracking-widest text-[var(--color-text-muted)]">
+                {lang}
+              </div>
+            )}
+            <pre className="p-3 font-mono text-[11px] leading-relaxed text-[var(--color-text-secondary)] whitespace-pre">{codeLines.join("\n")}</pre>
+          </div>
+        );
+        i++; // consume closing ```
+        continue;
+      }
+
+      // ── Headings ──
+      const h1 = line.match(/^# (.+)/);
+      if (h1) { result.push(<h1 key={i} className="mb-3 font-mono text-xl font-bold text-[var(--color-text-primary)]">{renderInline(h1[1])}</h1>); i++; continue; }
+      const h2 = line.match(/^## (.+)/);
+      if (h2) { result.push(<h2 key={i} className="mt-6 mb-2 border-b border-[var(--color-border)] pb-1 font-mono text-sm font-semibold text-[var(--color-text-primary)]">{renderInline(h2[1])}</h2>); i++; continue; }
+      const h3 = line.match(/^### (.+)/);
+      if (h3) { result.push(<h3 key={i} className="mt-4 mb-1.5 font-mono text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">{renderInline(h3[1])}</h3>); i++; continue; }
+
+      // ── Horizontal rule ──
+      if (/^-{3,}$/.test(line.trim())) {
+        result.push(<hr key={i} className="my-4 border-[var(--color-border)]" />);
+        i++; continue;
+      }
+
+      // ── Blockquote ──
+      if (line.startsWith("> ")) {
+        result.push(
+          <blockquote key={i} className="my-2 border-l-2 border-[var(--color-accent)] pl-3 italic text-sm text-[var(--color-text-secondary)]">
+            {renderInline(line.slice(2))}
+          </blockquote>
+        );
+        i++; continue;
+      }
+
+      // ── Unordered list ──
+      if (line.startsWith("- ")) {
+        const items: React.ReactNode[] = [];
+        while (i < lines.length && lines[i].startsWith("- ")) {
+          items.push(
+            <li key={i} className="text-sm text-[var(--color-text-secondary)]">
+              {renderInline(lines[i].slice(2))}
+            </li>
+          );
+          i++;
+        }
+        result.push(<ul key={`ul-${i}`} className="my-2 ml-4 list-disc space-y-0.5">{items}</ul>);
+        continue;
+      }
+
+      // ── Table ──
+      if (line.startsWith("|")) {
+        const rows: string[][] = [];
+        while (i < lines.length && lines[i].startsWith("|")) {
+          const cells = lines[i]
+            .split("|")
+            .filter((_, j, a) => j > 0 && j < a.length - 1)
+            .map((c) => c.trim());
+          if (!cells.every((c) => /^[-: ]+$/.test(c))) rows.push(cells);
+          i++;
+        }
+        if (rows.length > 0) {
+          result.push(
+            <div key={`tbl-${i}`} className="my-3 overflow-x-auto">
+              <table className="w-full border-collapse font-mono text-xs">
+                <thead>
+                  <tr>
+                    {rows[0].map((cell, j) => (
+                      <th key={j} className="border border-[var(--color-border)] bg-[var(--color-elevated)] px-3 py-1.5 text-left font-semibold text-[var(--color-text-primary)]">
+                        {renderInline(cell)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.slice(1).map((row, ri) => (
+                    <tr key={ri} className="even:bg-[var(--color-elevated)]/30">
+                      {row.map((cell, ci) => (
+                        <td key={ci} className="border border-[var(--color-border)] px-3 py-1.5 text-[var(--color-text-secondary)]">
+                          {renderInline(cell)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+        continue;
+      }
+
+      // ── Indented code (4 spaces — e.g. architecture diagram) ──
+      if (line.startsWith("    ")) {
+        const codeLines: string[] = [];
+        while (i < lines.length && (lines[i].startsWith("    ") || (lines[i] === "" && i + 1 < lines.length && lines[i + 1].startsWith("    ")))) {
+          codeLines.push(lines[i].slice(4));
+          i++;
+        }
+        result.push(
+          <pre key={`pre-${i}`} className="my-2 overflow-x-auto rounded bg-[var(--color-elevated)] p-2 font-mono text-[11px] leading-relaxed text-[var(--color-text-secondary)] whitespace-pre">
+            {codeLines.join("\n")}
+          </pre>
+        );
+        continue;
+      }
+
+      // ── Empty line ──
+      if (line.trim() === "") { i++; continue; }
+
+      // ── Paragraph ──
+      result.push(
+        <p key={i} className="my-1 text-sm leading-relaxed text-[var(--color-text-secondary)]">
+          {renderInline(line)}
+        </p>
+      );
+      i++;
+    }
+
+    return result;
+  }, [raw]);
+
+  return (
+    <div className="flex h-full flex-col">
+      <PreviewToolbar title={title} />
+      <div className="flex-1 overflow-auto p-4">
+        <div className="mx-auto max-w-2xl">{nodes}</div>
+      </div>
+    </div>
+  );
+});
+
 // ── Image viewer ───────────────────────────────────────────────────────────
 
-const ImageViewer = memo(function ImageViewer({ path, sessionId }: { path: string; sessionId: string | null }) {
-  const src = sessionId
+const MIME_FOR_EXT: Record<string, string> = {
+  svg:  "image/svg+xml",
+  png:  "image/png",
+  jpg:  "image/jpeg",
+  jpeg: "image/jpeg",
+  gif:  "image/gif",
+  webp: "image/webp",
+};
+
+const ImageViewer = memo(function ImageViewer({
+  path,
+  sessionId,
+  inlineB64,
+}: {
+  path: string;
+  sessionId: string | null;
+  inlineB64?: string;
+}) {
+  const ext  = path.split(".").pop()?.toLowerCase() ?? "";
+  const mime = MIME_FOR_EXT[ext] ?? "image/png";
+  const src  = inlineB64
+    ? `data:${mime};base64,${inlineB64}`
+    : sessionId
     ? `/api/v1/vfs/${sessionId}/file?path=${encodeURIComponent(path)}`
     : "";
 
@@ -536,13 +752,12 @@ function UnsupportedPane({ path }: { path: string }) {
 
 // ── Main registry ──────────────────────────────────────────────────────────
 
-export default function ComponentRegistry({ filePath, sessionId, inlineContent }: RegistryProps) {
+export default function ComponentRegistry({ filePath, sessionId, inlineContent, inlineB64 }: RegistryProps) {
   const kind = useMemo(() => detectKind(filePath), [filePath]);
   const [fetchState, setFetchState] = useState<FetchState<string>>({ status: "idle" });
 
-  // Images are served directly by URL — no fetch needed.
-  // Inline content also skips the fetch path entirely.
-  const needsFetch = kind !== "image" && inlineContent === undefined;
+  // Images and inline-delivered files skip the API fetch entirely.
+  const needsFetch = kind !== "image" && inlineContent === undefined && inlineB64 === undefined;
 
   const load = useCallback(async () => {
     if (!needsFetch) return;
@@ -561,16 +776,18 @@ export default function ComponentRegistry({ filePath, sessionId, inlineContent }
     load();
   }, [load]);
 
-  // Image preview bypasses fetch
+  // Image preview — use inline base64 data URL when available, else API URL
   if (kind === "image") {
-    return <ImageViewer path={filePath} sessionId={sessionId} />;
+    return <ImageViewer path={filePath} sessionId={sessionId} inlineB64={inlineB64} />;
   }
 
   // Inline content provided via WebSocket exit frame — use it directly
   if (inlineContent !== undefined) {
+    const title = filePath.split("/").pop() ?? filePath;
     switch (kind) {
       case "csv":  return <DataGrid raw={inlineContent} />;
       case "json": return <ChartView raw={inlineContent} />;
+      case "md":   return <MarkdownViewer raw={inlineContent} title={title} />;
       case "log":  return <LogViewer raw={inlineContent} />;
       default:     return <RawViewer raw={inlineContent} />;
     }
@@ -585,11 +802,13 @@ export default function ComponentRegistry({ filePath, sessionId, inlineContent }
   }
 
   const raw = fetchState.data;
+  const title = filePath.split("/").pop() ?? filePath;
 
   switch (kind) {
     case "csv":  return <DataGrid raw={raw} />;
     case "json": return <ChartView raw={raw} />;
     case "wasm": return <WasmInspector raw={raw} />;
+    case "md":   return <MarkdownViewer raw={raw} title={title} />;
     case "log":  return <LogViewer raw={raw} />;
     default:     return <RawViewer raw={raw} />;
   }

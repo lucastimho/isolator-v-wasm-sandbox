@@ -51,6 +51,8 @@ use crate::{
     error::SandboxError,
     sandbox_pool::SandboxPool,
     vfs::RingBuffer,
+    pii_scrubber,
+    backpressure::BackPressureGuard,
 };
 
 // ─── Shared application state ────────────────────────────────────────────────
@@ -62,14 +64,23 @@ pub struct AppState {
     /// In-flight job map: `job_id → stdout RingBuffer`.
     /// Populated just before `pool.execute()` is called, removed after drain.
     pub live_streams: Arc<Mutex<HashMap<String, Arc<RingBuffer>>>>,
+    /// Back-pressure controller — checks system load before admitting requests.
+    pub backpressure: Option<Arc<BackPressureGuard>>,
 }
 
 impl AppState {
     pub fn new(pool: Arc<SandboxPool>) -> Self {
         Self {
             pool,
-            live_streams: Arc::new(Mutex::new(HashMap::new())),
+            live_streams:  Arc::new(Mutex::new(HashMap::new())),
+            backpressure:  None,
         }
+    }
+
+    /// Attach a back-pressure guard (builder pattern).
+    pub fn with_backpressure(mut self, guard: Arc<BackPressureGuard>) -> Self {
+        self.backpressure = Some(guard);
+        self
     }
 }
 
@@ -182,6 +193,15 @@ async fn handle_execute(
 ) -> Response {
     let job_id = Uuid::new_v4().to_string();
 
+    // ── Back-pressure check ──────────────────────────────────────────────
+    // If the system is overloaded, shed the request immediately with 503.
+    if let Some(ref bp) = state.backpressure {
+        if let Err(snapshot) = bp.check_admission(state.pool.warm_count()) {
+            let (status, headers, body) = crate::backpressure::build_503_response(&snapshot);
+            return (status, headers, body).into_response();
+        }
+    }
+
     // Decode the Base64 WASM payload.
     let wasm_bytes = match BASE64_ENGINE.decode(&body.wasm_b64) {
         Ok(b)  => b,
@@ -206,8 +226,23 @@ async fn handle_execute(
 
     match state.pool.execute(wasm_bytes, &body.label).await {
         Ok(result) => {
-            let stdout = String::from_utf8_lossy(&result.stdout).into_owned();
-            let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
+            let raw_stdout = String::from_utf8_lossy(&result.stdout).into_owned();
+            let raw_stderr = String::from_utf8_lossy(&result.stderr).into_owned();
+
+            // ── PII / Secret scrubbing ───────────────────────────────────
+            // Redact API keys, credentials, PII from sandbox output before
+            // it reaches the client (last line of defense).
+            let (stdout, stderr, scrub_stats) =
+                pii_scrubber::scrub_execution_output(&raw_stdout, &raw_stderr);
+
+            if scrub_stats.redactions > 0 {
+                info!(
+                    job_id      = %job_id,
+                    redactions  = scrub_stats.redactions,
+                    rules       = ?scrub_stats.matched_rules,
+                    "PII scrubber redacted secrets from sandbox output"
+                );
+            }
 
             // Encode VFS files as Base64.
             let vfs_files = result.vfs_snapshot
@@ -338,11 +373,17 @@ async fn handle_health(State(state): State<AppState>) -> Response {
 /// In production, use the `metrics` + `metrics-exporter-prometheus` crates.
 async fn handle_metrics(State(state): State<AppState>) -> Response {
     let warm = state.pool.warm_count();
-    let body = format!(
+    let mut body = format!(
         "# HELP wasm_pool_warm_slots Current pre-warmed sandbox slots available\n\
          # TYPE wasm_pool_warm_slots gauge\n\
          wasm_pool_warm_slots {warm}\n"
     );
+
+    // Append back-pressure metrics if the guard is active.
+    if let Some(ref bp) = state.backpressure {
+        body.push_str(&crate::backpressure::prometheus_metrics(bp));
+    }
+
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],

@@ -13,6 +13,49 @@
  */
 
 import { useEffect, useRef, useCallback } from "react";
+import type { ITheme } from "@xterm/xterm";
+
+// ── Xterm theme palettes ───────────────────────────────────────────────────
+// Both themes share the same accent / ANSI hues; only the background,
+// foreground and selection colours differ so the terminal adapts naturally
+// to the surrounding UI without losing colour-coding in program output.
+
+const XTERM_DARK: ITheme = {
+  background:         "#08080a",
+  foreground:         "#e8e8f0",
+  cursor:             "#6366f1",
+  cursorAccent:       "#f1f5f9",
+  selectionBackground:"rgba(99,102,241,0.3)",
+  black:   "#1e1e26", red:     "#f87171", green:  "#4ade80",
+  yellow:  "#facc15", blue:    "#60a5fa", magenta:"#c084fc",
+  cyan:    "#22d3ee", white:   "#e8e8f0",
+  brightBlack:   "#404060", brightRed:    "#ef4444",
+  brightGreen:   "#22c55e", brightYellow: "#f59e0b",
+  brightBlue:    "#818cf8", brightMagenta:"#a855f7",
+  brightCyan:    "#06b6d4", brightWhite:  "#f1f5f9",
+};
+
+const XTERM_LIGHT: ITheme = {
+  background:         "#f4f4f8",
+  foreground:         "#1a1a2e",
+  cursor:             "#6366f1",
+  cursorAccent:       "#ffffff",
+  selectionBackground:"rgba(99,102,241,0.25)",
+  // ANSI colours — darkened / desaturated so they stay readable on light bg
+  black:   "#2c2c3e", red:     "#c0392b", green:  "#1a7a40",
+  yellow:  "#b7770d", blue:    "#2563eb", magenta:"#7c3aed",
+  cyan:    "#0e7490", white:   "#52527a",
+  brightBlack:   "#6c6c8c", brightRed:    "#e53e3e",
+  brightGreen:   "#16a34a", brightYellow: "#d97706",
+  brightBlue:    "#3b82f6", brightMagenta:"#9333ea",
+  brightCyan:    "#0891b2", brightWhite:  "#1a1a2e",
+};
+
+function getXtermTheme(): ITheme {
+  return document.documentElement.classList.contains("light")
+    ? XTERM_LIGHT
+    : XTERM_DARK;
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -60,6 +103,18 @@ export default function Terminal({ sessionId, running, wasmB64, onEnd }: Termina
   // WebSocket
   const wsRef = useRef<WebSocket | null>(null);
 
+  // Set to true in the effect cleanup before calling ws.close() so that the
+  // resulting onerror / onclose callbacks know the close was intentional and
+  // must NOT propagate an "error" outcome to the parent.  This prevents:
+  //   • React 18 StrictMode double-mount: cleanup fires on the first mount
+  //     before the socket is open, producing a spurious 1006 that would
+  //     otherwise flip the sandbox into the "crashed" state and prevent the
+  //     second (real) mount from ever running.
+  //   • handleStop: parent sets sandboxState="idle" → running flips to false
+  //     → cleanup runs → without this guard the close would overwrite "idle"
+  //     with "crashed".
+  const intentionalCloseRef = useRef(false);
+
   // VFS snapshot received in the exit frame — held until onclose fires so
   // we can pass it to onEnd in one call.
   const vfsSnapshotRef = useRef<Record<string, string> | undefined>(undefined);
@@ -93,20 +148,7 @@ export default function Terminal({ sessionId, running, wasmB64, onEnd }: Termina
         fontFamily: '"JetBrains Mono", "Fira Code", monospace',
         fontSize: 13,
         lineHeight: 1.45,
-        theme: {
-          background:  "#08080a",
-          foreground:  "#e8e8f0",
-          cursor:      "#6366f1",
-          cursorAccent:"#f1f5f9",
-          selectionBackground: "rgba(99,102,241,0.3)",
-          black:   "#1e1e26", red:     "#f87171", green:  "#4ade80",
-          yellow:  "#facc15", blue:    "#60a5fa", magenta:"#c084fc",
-          cyan:    "#22d3ee", white:   "#e8e8f0",
-          brightBlack:   "#404060", brightRed:    "#ef4444",
-          brightGreen:   "#22c55e", brightYellow: "#f59e0b",
-          brightBlue:    "#818cf8", brightMagenta:"#a855f7",
-          brightCyan:    "#06b6d4", brightWhite:  "#f1f5f9",
-        },
+        theme: getXtermTheme(),
         cursorBlink: true,
         scrollback: 5_000,
         convertEol: true,
@@ -140,6 +182,24 @@ export default function Terminal({ sessionId, running, wasmB64, onEnd }: Termina
       disposed = true;
     };
   }, []); // run once
+
+  // ── Sync xterm theme when light/dark mode is toggled ─────────────────
+  // A MutationObserver watches the `class` attribute on <html>.  Whenever
+  // the "light" / "dark" class changes, the terminal palette is swapped
+  // instantly without needing to remount xterm.
+
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      if (xtermRef.current) {
+        xtermRef.current.options.theme = getXtermTheme();
+      }
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+    return () => observer.disconnect();
+  }, []);
 
   // ── Fit on container resize ───────────────────────────────────────────
 
@@ -188,6 +248,9 @@ export default function Terminal({ sessionId, running, wasmB64, onEnd }: Termina
 
   useEffect(() => {
     if (!running || !sessionId) return;
+
+    // Mark this session's close as unintentional until the cleanup fires.
+    intentionalCloseRef.current = false;
 
     // Snapshot the current xterm instance.  If it's still loading (Promise.all
     // not yet resolved) this will be null; writeln calls below use optional
@@ -331,6 +394,9 @@ export default function Terminal({ sessionId, running, wasmB64, onEnd }: Termina
 
     ws.onerror = (ev) => {
       console.error("[Terminal] WebSocket onerror:", ev);
+      // Suppress errors that result from the effect cleanup closing the socket
+      // deliberately (StrictMode double-mount, Stop button, Reset, etc.).
+      if (intentionalCloseRef.current) return;
       xtermRef.current?.writeln(
         "\r\n\x1b[31m[terminal] WebSocket error — connection lost\x1b[0m\r\n"
       );
@@ -338,6 +404,9 @@ export default function Terminal({ sessionId, running, wasmB64, onEnd }: Termina
 
     ws.onclose = (ev) => {
       console.log("[Terminal] WebSocket onclose:", { code: ev.code, reason: ev.reason, wasClean: ev.wasClean });
+
+      // Suppress closes that were initiated by our own cleanup handler.
+      if (intentionalCloseRef.current) return;
 
       // NOTE: wasClean only means the TCP handshake closed gracefully — it does
       // NOT mean execution succeeded.  Code 1011 ("execution failed") arrives
@@ -376,6 +445,10 @@ export default function Terminal({ sessionId, running, wasmB64, onEnd }: Termina
     return () => {
       console.log("[Terminal] WS effect cleanup, ws.readyState:", ws.readyState);
       inputDisposer?.dispose();
+      // Mark close as intentional BEFORE calling ws.close() so that the
+      // onerror / onclose callbacks that fire synchronously (or microtask-
+      // synchronously) see the flag and do not call onEnd("error").
+      intentionalCloseRef.current = true;
       ws.close(1000, "session ended");
       wsRef.current = null;
       // Flush any remaining buffered output that wasn't already drained by the
@@ -410,8 +483,7 @@ export default function Terminal({ sessionId, running, wasmB64, onEnd }: Termina
   return (
     <div
       ref={containerRef}
-      className="h-full w-full overflow-hidden"
-      style={{ background: "#08080a" }}
+      className="h-full w-full overflow-hidden bg-[var(--color-void)]"
       aria-label="Execution terminal"
     />
   );

@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  colorScheme: "dark",
+  colorScheme: "dark light",
   themeColor: "#08080a",
 };
 
@@ -18,8 +18,20 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
+    // "dark" is the server-rendered default; the inline script below
+    // overrides it to "light" before the first paint if the user has
+    // previously selected light mode.  suppressHydrationWarning silences
+    // the React mismatch warning that would otherwise fire when the
+    // script changes the class before hydration.
     <html lang="en" className="dark" suppressHydrationWarning>
       <head>
+        {/* Anti-flash: read localStorage and apply the correct theme class
+            synchronously before the browser paints the first frame.        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem('theme');if(t==='light'){document.documentElement.classList.remove('dark');document.documentElement.classList.add('light');}}catch(e){}})();`,
+          }}
+        />
         {/* JetBrains Mono for terminal authenticity */}
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link
