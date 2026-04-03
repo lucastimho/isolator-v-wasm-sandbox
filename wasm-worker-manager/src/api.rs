@@ -195,12 +195,19 @@ async fn handle_execute(
 
     // ── Back-pressure check ──────────────────────────────────────────────
     // If the system is overloaded, shed the request immediately with 503.
-    if let Some(ref bp) = state.backpressure {
-        if let Err(snapshot) = bp.check_admission(state.pool.warm_count()) {
-            let (status, headers, body) = crate::backpressure::build_503_response(&snapshot);
-            return (status, headers, body).into_response();
+    // The admission ticket is held for the duration of execution so the
+    // active-count stays accurate (RAII drop decrements it).
+    let _admission_ticket = if let Some(ref bp) = state.backpressure {
+        match bp.check_admission() {
+            Ok(()) => Some(bp.admit()),
+            Err(snapshot) => {
+                let (status, headers, body) = crate::backpressure::build_503_response(&snapshot);
+                return (status, headers, body).into_response();
+            }
         }
-    }
+    } else {
+        None
+    };
 
     // Decode the Base64 WASM payload.
     let wasm_bytes = match BASE64_ENGINE.decode(&body.wasm_b64) {
