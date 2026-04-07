@@ -78,6 +78,7 @@ func NewRouter(cfg ServerConfig) http.Handler {
 			r.Use(chiMiddleware.Compress(5))
 
 			r.Post("/execute", h.Execute)
+			r.Post("/compile", h.Compile)
 
 			// Per-session observability.
 			r.Get("/vitals/{sessionId}", h.Vitals)

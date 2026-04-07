@@ -34,6 +34,7 @@ Isolator-V executes untrusted WebAssembly payloads inside fully isolated, epheme
 - [Performance](#performance)
 - [Tech Stack](#tech-stack)
 - [Getting Started](#getting-started)
+- [Code Editor](#code-editor)
 
 ---
 
@@ -272,6 +273,43 @@ wasm_backpressure_admitted_total 9685
 
 ---
 
+### `POST /compile`
+
+Accepts Rust source code, compiles it to `wasm32-wasip1` via `rustc`, and returns the WASM binary as a base64 string. This powers the in-browser code editor, enabling users to write and execute custom Rust programs without a local toolchain.
+
+**Request:**
+```json
+{
+  "source": "fn main() { println!(\"hello\"); }",
+  "edition": "2021"
+}
+```
+
+The `edition` field is optional and defaults to `"2021"`. Supported values: `"2015"`, `"2018"`, `"2021"`.
+
+**Response `200`:**
+```json
+{
+  "wasm_b64":     "<base64 WASM binary>",
+  "wasm_bytes":   1234,
+  "compile_ms":   850,
+  "warnings":     "warning: unused variable..."
+}
+```
+
+**Response `400` (compilation error):**
+```json
+{
+  "error":       "compilation_failed",
+  "stderr":      "error[E0308]: mismatched types...",
+  "compile_ms":  420
+}
+```
+
+Compilation has a 30-second timeout. The orchestrator host must have `rustup target add wasm32-wasip1` installed.
+
+---
+
 ## Module Breakdown
 
 ```mermaid
@@ -503,6 +541,12 @@ Make sure the following tools are installed before you begin:
 | Node.js + npm | 20+ | https://nodejs.org |
 | Docker (for Redis) | any | https://docs.docker.com/get-docker |
 
+The code editor feature (writing custom Rust programs in the browser) requires the WASI compile target on the machine running the orchestrator:
+
+```bash
+rustup target add wasm32-wasip1
+```
+
 > **macOS note:** seccomp BPF (Layer 1 syscall filtering) is Linux-only. The WASM Worker Manager runs on macOS with seccomp gracefully disabled — all other security layers remain active.
 
 ---
@@ -732,6 +776,93 @@ hey -n 500 -c 50 -m POST \
     -d "{\"wasm_b64\":\"$NOOP\",\"label\":\"bench\"}" \
     http://localhost:8080/execute
 ```
+
+---
+
+## Code Editor
+
+The frontend includes an in-browser Rust code editor that lets users write custom programs and execute them in the sandbox — no local Rust toolchain required on the user's machine.
+
+### How It Works
+
+```mermaid
+sequenceDiagram
+    participant User as Browser
+    participant FE as Next.js Frontend
+    participant ORC as Go Orchestrator
+    participant RC as rustc (on orchestrator host)
+    participant WM as WASM Worker Manager
+
+    User->>FE: Write Rust code in editor
+    User->>FE: Click "Compile & Run" (or Ctrl+Enter)
+    FE->>ORC: POST /compile {source, edition}
+    ORC->>RC: rustc --target wasm32-wasip1 -O main.rs
+    RC-->>ORC: main.wasm binary
+    ORC-->>FE: {wasm_b64, wasm_bytes, compile_ms}
+    FE->>ORC: POST /execute {wasm_b64}
+    ORC->>WM: POST /execute {wasm_b64}
+    WM-->>ORC: {stdout, stderr, vfs_files, elapsed_ms}
+    ORC-->>FE: execution results
+    FE-->>User: Terminal output + VFS files
+```
+
+The flow has two stages: first the orchestrator compiles Rust source to a WASM binary using `rustc` on the host, then the compiled binary is sent to the WASM Worker Manager for sandboxed execution just like any other payload.
+
+### Using the Editor
+
+1. Open **http://localhost:3000** in your browser.
+2. In the toolbar, switch the mode dropdown from **Demo** to **Editor**.
+3. The left panel switches to a Rust code editor pre-filled with a starter program.
+4. Write your Rust program. The editor supports Tab indentation (4 spaces).
+5. Click **Compile & Run** or press **Ctrl+Enter** (Cmd+Enter on macOS).
+6. If compilation fails, the compiler output panel (red) displays the full `rustc` error.
+7. If compilation succeeds, the status badge shows the WASM binary size and compile time, and execution begins automatically.
+8. The terminal panel on the right streams stdout/stderr. The VFS tab shows any files the program wrote to `/workspace/`.
+
+### What You Can Do in a Guest Program
+
+Guest programs run as standard WASI binaries. They have access to:
+
+- **stdout/stderr** — `println!()` and `eprintln!()` output appears in the terminal
+- **Virtual filesystem** — read/write files under `/workspace/`. Create directories with `std::fs::create_dir_all`. Files written to `/workspace/output/` appear in the VFS tab after execution.
+- **Environment variables** — `std::env::vars()` returns sandbox-injected variables
+- **Command-line arguments** — `std::env::args()` returns any arguments passed by the orchestrator
+
+Guest programs do **not** have access to network sockets, the host filesystem, or clock-based randomness. The sandbox enforces a 50ms CPU budget and 50 MB memory cap.
+
+### Example: Custom Fibonacci Generator
+
+```rust
+fn main() {
+    let n = 20;
+    let mut a: u64 = 0;
+    let mut b: u64 = 1;
+
+    println!("Fibonacci sequence (first {} terms):", n);
+    for i in 0..n {
+        println!("  F({}) = {}", i, a);
+        let next = a + b;
+        a = b;
+        b = next;
+    }
+
+    // Write results to the sandbox VFS
+    let json = format!(r#"{{"fib_{}": {}}}"#, n - 1, a);
+    std::fs::create_dir_all("/workspace/output").unwrap();
+    std::fs::write("/workspace/output/fibonacci.json", &json).unwrap();
+    println!("\nWrote fibonacci.json to /workspace/output/");
+}
+```
+
+### Prerequisites
+
+The code editor feature requires `rustc` with the WASI target on the **orchestrator host** (the machine running the Go server). The user's browser needs nothing special.
+
+```bash
+rustup target add wasm32-wasip1
+```
+
+Compilation uses `rustc` directly (not Cargo) for speed — single-file programs compile in under a second. External crate dependencies are not supported; guest programs must be self-contained.
 
 ---
 

@@ -29,6 +29,7 @@ import VirtualFileTree, { type VFSEntry } from "./VirtualFileTree";
 import AgentVitals from "./AgentVitals";
 import { TerminalErrorBoundary } from "./TerminalErrorBoundary";
 import ComponentRegistry from "./ComponentRegistry";
+import CodeEditor from "./CodeEditor";
 import Tooltip from "./Tooltip";
 import HelpOverlay from "./HelpOverlay";
 import StatusBar from "./StatusBar";
@@ -619,6 +620,10 @@ export default function ExecutionConsole() {
   const [helpOpen,         setHelpOpen]         = useState(false);
   const [showVitals,       setShowVitals]       = useState(false);
   const [selectedDemo,     setSelectedDemo]     = useState<DemoKey>("hello");
+  /** Input mode: choose a pre-built demo or write custom Rust code. */
+  const [inputMode,        setInputMode]        = useState<"demo" | "editor">("demo");
+  /** WASM binary (base64) produced by the code editor's /compile endpoint. */
+  const [customWasmB64,    setCustomWasmB64]    = useState<string | null>(null);
   /** VFS entries delivered inline via the WebSocket exit frame (no LIBSQL_URL needed). */
   const [inlineVfsEntries,  setInlineVfsEntries]  = useState<VFSEntry[]>([]);
   /**
@@ -645,6 +650,16 @@ export default function ExecutionConsole() {
     setSandboxState("running");
     setActiveTab("terminal");
   }, [sandboxState]);
+
+  /** Called by CodeEditor when compilation succeeds — stores WASM and kicks off a run. */
+  const handleCompiled = useCallback((wasmB64: string) => {
+    setCustomWasmB64(wasmB64);
+    // Trigger execution immediately after compile.
+    const id = `sess_${Date.now().toString(36)}`;
+    setSessionId(id);
+    setSandboxState("running");
+    setActiveTab("terminal");
+  }, []);
 
   const handleStop = useCallback(() => {
     if (sandboxState !== "running") return;
@@ -812,27 +827,47 @@ export default function ExecutionConsole() {
 
           <div className="mx-1.5 h-4 w-px bg-[var(--color-border)]" />
 
-          {/* Demo selector */}
-          <Tooltip content={DEMOS[selectedDemo].description} side="bottom">
-            <div className="flex items-center gap-1.5">
-              <span className="font-mono text-[10px] uppercase tracking-widest text-[var(--color-text-muted)]">
-                demo
-              </span>
-              <select
-                value={selectedDemo}
-                onChange={(e) => setSelectedDemo(e.target.value as DemoKey)}
-                disabled={sandboxState === "running"}
-                className="rounded border border-[var(--color-border)] bg-[var(--color-elevated)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--color-text-secondary)] outline-none transition-colors hover:border-[var(--color-accent)] focus:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
-                aria-label="Select demo WASM program"
-              >
-                {(Object.keys(DEMOS) as DemoKey[]).map((key) => (
-                  <option key={key} value={key}>
-                    {DEMOS[key].label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </Tooltip>
+          {/* Input mode toggle */}
+          <div className="flex items-center gap-1.5">
+            <select
+              value={inputMode}
+              onChange={(e) => setInputMode(e.target.value as "demo" | "editor")}
+              disabled={sandboxState === "running"}
+              className="rounded border border-[var(--color-border)] bg-[var(--color-elevated)] px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-widest text-[var(--color-text-muted)] outline-none transition-colors hover:border-[var(--color-accent)] focus:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="Select input mode"
+            >
+              <option value="demo">Demo</option>
+              <option value="editor">Editor</option>
+            </select>
+          </div>
+
+          {/* Demo selector (only shown in demo mode) */}
+          {inputMode === "demo" && (
+            <Tooltip content={DEMOS[selectedDemo].description} side="bottom">
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={selectedDemo}
+                  onChange={(e) => setSelectedDemo(e.target.value as DemoKey)}
+                  disabled={sandboxState === "running"}
+                  className="rounded border border-[var(--color-border)] bg-[var(--color-elevated)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--color-text-secondary)] outline-none transition-colors hover:border-[var(--color-accent)] focus:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label="Select demo WASM program"
+                >
+                  {(Object.keys(DEMOS) as DemoKey[]).map((key) => (
+                    <option key={key} value={key}>
+                      {DEMOS[key].label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </Tooltip>
+          )}
+
+          {/* Editor hint (only shown in editor mode) */}
+          {inputMode === "editor" && (
+            <span className="font-mono text-[10px] text-[var(--color-text-muted)]">
+              Write Rust code above the terminal — {MOD}↵ to compile &amp; run
+            </span>
+          )}
 
           <div className="mx-1.5 h-4 w-px bg-[var(--color-border)]" />
 
@@ -983,6 +1018,11 @@ export default function ExecutionConsole() {
                           inlineContent={inlineFileContent}
                           inlineB64={inlineFileB64}
                         />
+                      ) : inputMode === "editor" ? (
+                        <CodeEditor
+                          onCompiled={handleCompiled}
+                          running={sandboxState === "running"}
+                        />
                       ) : (
                         <WelcomePane
                           onRun={handleRun}
@@ -1027,7 +1067,7 @@ export default function ExecutionConsole() {
                         <Terminal
                           sessionId={sessionId}
                           running={sandboxState === "running"}
-                          wasmB64={DEMOS[selectedDemo].wasmB64}
+                          wasmB64={inputMode === "editor" && customWasmB64 ? customWasmB64 : DEMOS[selectedDemo].wasmB64}
                           onEnd={(outcome, vfsSnapshot, exitCode) => {
                             if (outcome !== "complete") {
                               setSandboxState("crashed");
